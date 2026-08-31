@@ -127,8 +127,8 @@ per segment: minimum-jerk (default), constant-jerk, constant-acceleration, SCJ, 
 (Eqs. S14–S17).
 
 Sustained Z ≠ 0 costs bandwidth at rate $\dot f_Z = \tfrac{v^2}{2\lambda F^2}Z$ on all four
-channels (Eq. 1) — the synthesizer checks per-channel band limits (A-pair narrower than
-B-pair, Fig. S8) and either raises a clear error with the max feasible move, or (milestone 4)
+channels (Eq. 1) — the synthesizer checks per-channel band limits (±10 MHz default,
+per-channel configurable) and either raises a clear error with the max feasible move, or (milestone 4)
 switches to **fading-Shepard waveforms** (Eqs. S24–S28): tone ladders spaced Δf, cos^p fade
 envelopes with duty η, x/y fading zones interlaced (ξ offset ½), p_A = 1 / p_B = 0 for arrays
 so in-array intensity stays constant.
@@ -142,7 +142,7 @@ so in-array intensity stays constant.
 | Active aperture D | 7.5 mm | DTSXY-400 |
 | Acoustic transit τ = D/v | 11.54 µs | derived |
 | Center frequency f₀ | 100 MHz | paper |
-| Usable band | B-pair ±10 MHz; A-pair ±4 MHz (TPM-limited) | Figs. 3, S8 |
+| Usable band | ±10 MHz, all four channels | decision (TPM-narrowed A-band remains a config knob) |
 | Objective focal length F | 6.5 mm | paper (effective F*) |
 | Input beam 1/e² radius w_in | 2.0 mm (Gaussian, uncropped) | → w₀ ≈ 1.07 µm at 1030 nm (cf. measured 1.1 µm* at 808 nm) |
 | Sample rate (AWG export) | 625 MS/s (configurable) | Spectrum M4i.6631-x8 |
@@ -246,29 +246,26 @@ intensity; ✓ shadow tweezers appear at ±(2λF/v)Δf during fades and vanish o
 zones ((Mx+2)×My extended grid for arrays); ✓ interlaced vs simultaneous fading comparison.
 
 **M5 — Product layer.**
-`api.py` front door, trajectory DSL, AWG export formats, report generation (band usage,
+`api.py` front door, trajectory DSL, parametric-NPZ waveform storage + sample rendering
+for AWGs, report generation (band usage,
 predicted ghosts/shadow schedule, astig metrics), docs + example gallery, packaging.
 Stretch (post-v1): atom-motion Monte Carlo (Eq. S13), measured-efficiency calibration hooks,
 misalignment/delay-mismatch knobs (Eq. S29), cropped-aperture erf corrections.
 
 ---
 
-## 4. Decisions for Nathan (recommended defaults in bold)
+## 4. Decisions (resolved 2026-08-31)
 
-1. **Hardware defaults** — **keep paper hardware (DTSX-400 / 650 m/s / 7.5 mm / F = 6.5 mm)
-   with λ = 1030 nm**, plus a `paper_808` preset for figure reproduction? Or target other
-   AODs/objectives for the product's defaults?
-2. **Input beam** — **uncropped Gaussian (w_in = 2 mm default, exact closed forms)** vs. the
-   paper's cropped-Gaussian filling-factor-1 (needs numerics/erf terms). Reference integrator
-   will quantify the difference either way.
-3. **Movie default** — **fixed atom-plane view (true camera physics: spots blur & dim when
-   out of plane) with hue ↔ Z as overlay**, plus optional focus-tracked mode and XZ-slice
-   panel. OK?
-4. **Mixing depth** — **perturbative expansion through IM3, calibrated drive strength C**;
-   full coupled-mode Bragg deferred. OK?
-5. **AWG export target** — generic NPZ/CSV plus **Spectrum M4i.6631-x8** binary layout? Any
-   other AWGs your target labs use?
-6. **A-pair usable bandwidth** — I picked ±4 MHz (from Fig. 3's f_Ax span) vs ±10 MHz for the
-   B-pair. What limits do you want as shipped defaults?
+1. **Hardware defaults** — paper hardware (DTSX-400 / 650 m/s / 7.5 mm / f₀ = 100 MHz /
+   F = 6.5 mm) at λ = 1030 nm; `paper_808` preset kept for figure reproduction.
+2. **Input beam** — uncropped Gaussian (w_in = 2 mm default); exact closed forms throughout.
+3. **Movie default** — focus-tracked 2D planar view (plane follows the tweezers' focal spot),
+   hue ↔ Z, with an XZ-slice side panel. Fixed-plane camera view kept as alternate mode.
+4. **Mixing depth** — perturbative expansion through IM3 with calibrated drive strength C;
+   full coupled-mode Bragg deferred.
+5. **Waveform storage/export** — generic NPZ holding the *parametric function representation*
+   (segments + parameters, no samples); expansion to samples (or to the analytic simulator's
+   inputs) is a separate render step. AWG-specific binary formats deferred.
+6. **Usable bandwidth** — ±10 MHz on all four channels (per-channel limits stay configurable).
 
-Unless redirected, M0+M1 proceed with the bold defaults.
+See `ARCHITECTURE.md` for the resulting code structure.
