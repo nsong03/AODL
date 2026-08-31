@@ -199,8 +199,8 @@ src/aodl/
     movie.py           # XY movie @ fixed plane or focus-tracked; hue ↔ Z; panels
   api.py               # one-call front door: spec → (waveforms, movie, report)
 tests/                 # pytest; analytic-vs-reference, formula regressions
-examples/              # scripts matching milestones M1–M5
-docs/                  # this plan, physics notes, user guide
+examples/              # documented Jupyter notebooks, one per milestone (run in CI)
+docs/                  # this plan, architecture, physics notes, user guide
 ```
 
 Conventions: Python 3.11+, numpy/scipy/matplotlib only, SI units internally with explicit
@@ -211,7 +211,10 @@ physics function documented with the equation it implements (`Eq. S8`, etc.).
 
 ## 3. Milestones (build & verify ladder)
 
-Each milestone = code + example script + quantitative pytest against closed-form physics.
+Each milestone = code + a documented example notebook + quantitative pytest against
+closed-form physics. Notebooks are narrative (physics statement → waveforms → simulation →
+result vs. analytic prediction), double as the lab-facing user guide, and are executed in CI
+(`nbmake`) so they cannot rot; reusable logic stays in `src/aodl/`.
 
 **M0 — Scaffold + field core.**
 Package skeleton, params/units, `field/gaussian.py` + `field/reference.py`.
@@ -248,7 +251,7 @@ zones ((Mx+2)×My extended grid for arrays); ✓ interlaced vs simultaneous fadi
 **M5 — Product layer.**
 `api.py` front door, trajectory DSL, parametric-NPZ waveform storage + sample rendering
 for AWGs, report generation (band usage,
-predicted ghosts/shadow schedule, astig metrics), docs + example gallery, packaging.
+predicted ghosts/shadow schedule, astig metrics), docs + notebook gallery, packaging.
 Stretch (post-v1): atom-motion Monte Carlo (Eq. S13), measured-efficiency calibration hooks,
 misalignment/delay-mismatch knobs (Eq. S29), cropped-aperture erf corrections.
 

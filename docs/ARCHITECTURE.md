@@ -100,12 +100,12 @@ AODL/
 │   │   ├── style.py          # colormaps (Z-hue), panel layout defaults
 │   │   └── movie.py          # focus-tracked XY view + XZ slice + spectrograms → mp4/gif
 │   └── api.py                # one-call front door for the product workflow
-├── examples/
-│   ├── 01_single_aod_sweep.py        # M1
-│   ├── 02_crossed_pair_diagonal.py   # M2
-│   ├── 03_aodl_3d_motion.py          # M3
-│   ├── 04_array_lift_traverse.py     # M3 (the user story)
-│   └── 05_fading_shepard.py          # M4
+├── examples/                         # documented Jupyter notebooks (see §3a)
+│   ├── 01_single_aod_sweep.ipynb        # M1
+│   ├── 02_crossed_pair_diagonal.ipynb   # M2
+│   ├── 03_aodl_3d_motion.ipynb          # M3
+│   ├── 04_array_lift_traverse.ipynb     # M3 (the user story)
+│   └── 05_fading_shepard.ipynb          # M4
 └── tests/
     ├── test_poly.py                  # closure: integral/derivative exactness
     ├── test_gaussian.py              # closed forms vs numerical quadrature
@@ -172,6 +172,16 @@ coherently, distinct groups add in intensity (beat notes average out — Supplem
 "interlaced vs simultaneous fading" logic). Per-group evaluation happens on a bounding patch
 (±4 waists) and accumulates into the canvas.
 
+### Examples as notebooks
+
+`examples/` contains Jupyter notebooks, one per milestone, written as *narrative
+documentation*: markdown cells state the physics being demonstrated (with the paper equation
+and the closed-form prediction), code cells build the waveforms and run the simulation, and
+figure/movie cells show the result next to the analytic expectation. They double as the user
+guide for AMO labs. Conventions: committed with outputs cleared (figures/movies regenerate on
+run), executed headlessly in CI via `pytest --nbmake` so they can never rot, and kept thin —
+all reusable logic lives in `src/aodl/`, never in notebook cells.
+
 ### Movie (decision #3)
 
 Default renderer: **focus-tracked planar view** — the XY plane is placed at the
@@ -193,7 +203,8 @@ Runtime (deliberately minimal for lab deployability):
 | `matplotlib` | frame rendering, panels |
 | `imageio` + `imageio-ffmpeg` | mp4 encoding without system ffmpeg |
 
-Dev: `pytest`, `ruff` (lint + format), `mypy` (typed public API). Python ≥ 3.11.
+Dev: `pytest`, `ruff` (lint + format), `mypy` (typed public API), `jupyterlab` + `nbmake`
+(notebook examples and their CI execution). Python ≥ 3.11.
 No JAX/torch/numba: term counts (~10²–10³/frame) and patch evaluation keep pure numpy fast
 (target ≪ 1 s/frame for a 10×10 array at 512² rendering).
 
