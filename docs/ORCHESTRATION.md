@@ -46,3 +46,4 @@ M1 verification report lands.
 | Date | Event |
 |------|-------|
 | 2026-08-31 | Work orders WO-01…WO-06 authored; Wave A dispatched. |
+| 2026-08-31 | Wave A (WO-01) accepted: 20 tests, S11 mapping vs quadrature ~1e-15; commit `1398fc8`. Wave B (WO-02/03/04) dispatched in parallel. |

@@ -44,4 +44,6 @@ pytest --nbmake examples/        # execute notebooks (only when asked)
 - Only the agent designated as "wave closer" in its work order runs git commands
   (stage/commit/push); other agents leave the working tree for the closer.
 - Commit only files your work order owns plus files the closer role tells you to
-  integrate. Never rewrite history. Never mention AI model names in commits.
+  integrate. Never rewrite history. Commit-message footers: use exactly the footer lines
+  given in your dispatch instructions; apart from that footer, never mention AI model
+  names in commit messages or code.
