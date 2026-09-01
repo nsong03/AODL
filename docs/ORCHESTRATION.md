@@ -56,6 +56,8 @@ M1 verification report lands.
 | 2026-09-01 | M3 work orders WO-10…WO-13 authored; ARCHITECTURE.md drift fixed. Wave H (WO-10 ∥ WO-11) dispatched. |
 | 2026-09-01 | Wave H accepted: WO-11 (`32d0e4c`, exact-to-float64 S19 round trip; PLAN Eq. 1 headroom corrected to one-sided ≈206 µs), WO-10 (`b1c0b63`, τ/2-darkness + erf² fill + 646k-term guard case). Ruling: measure.py two-sided power fix assigned to WO-12 §0. |
 | 2026-09-01 | Wave I accepted (WO-12, `f0ac4cf`): 255 tests, 4 notebooks, user story at 25/30/25 µs (original durations band-infeasible — kept as the notebook's Eq. 1 teaser; M4 reprises them with fading-Shepard), 3D-AODL vs 2-AOD contrast 0.00 vs 1.90 z_R. Wave J (WO-13) dispatched. |
+| 2026-09-01 | Wave J verdict: **M3 ACCEPTED** (WO-13; fixes `5d30409` XZ-panel row snapping, `f8d4d71` band-message headroom wording). S19 inverted from waveforms at 1e-15; 2-AOD control fails the astig bound by 317×; Eq. 1 boundary bisected to 1 Hz. |
+| 2026-09-01 | M4 work orders WO-14…WO-16 authored (fading-Shepard); ARCHITECTURE test-tree drift fixed. Wave K (WO-14) dispatched. |
 
 ## Backlog (tracked findings, not yet scheduled)
 

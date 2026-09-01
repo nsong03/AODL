@@ -106,15 +106,14 @@ AODL/
 │   ├── 03_aodl_3d_motion.ipynb          # M3
 │   ├── 04_array_lift_traverse.ipynb     # M3 (the user story)
 │   └── 05_fading_shepard.ipynb          # M4
-└── tests/
-    ├── test_poly.py                  # closure: integral/derivative exactness
-    ├── test_gaussian.py              # closed forms vs numerical quadrature
-    ├── test_tones.py                 # phase continuity; render↔analytic consistency
-    ├── test_synthesis.py             # Table I mapping; band checks; Schroeder phases
-    ├── test_single_aod.py            # M1 acceptance (position law, ΔF = λF²ḟ/v²)
-    ├── test_crossed_pair.py          # M2 acceptance (spherical lensing, IM3 ghosts)
-    ├── test_aodl.py                  # M3 acceptance (astig-free motion, pure Z)
-    └── test_roundtrip.py             # spec → waveforms → sim → measured ≈ requested
+└── tests/                            # (as built; one file per module plus per-milestone
+    ├── test_poly.py … test_tones.py  #  integration suites)
+    ├── test_conventions.py  test_device_single_aod.py  test_mixing.py  test_window.py
+    ├── test_focal.py  test_measure.py  test_focal_geometry.py  test_grouping.py
+    ├── test_ramps.py  test_serialize.py  test_export.py  test_spec.py
+    ├── test_synthesis.py  test_synthesis_s19.py  test_engine.py
+    └── test_integration_m1.py  _m2.py  _m3.py   # per-milestone acceptance
+                                                 # (spec → waveforms → sim → measured)
 ```
 
 ## 3. Core data types (contracts)
