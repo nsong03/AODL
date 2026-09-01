@@ -234,8 +234,15 @@ def _drive_strip(ax: Any, result: SimResult) -> None:
     Plots ``f_center + f(t - tau/2)`` against frame time ``t`` for every tone, with segment
     opacity following the envelope, so fades (M4's Shepard ladders) show up as fading lines.
     This is the paper's Fig. 3/4 spectrogram read analytically — no FFT (``CLAUDE.md``).
+
+    A segment whose envelope is *identically zero* is not drawn at all, rather than drawn at
+    the floor opacity, and the vertical range follows the *live* excursion only: such a tone
+    is not launched by the transducer, and a fading-Shepard ladder spends most of its rungs'
+    programmed span there — at 90-odd rungs the floor alone would paint a solid band across
+    the panel and stretch it over three times the bandwidth the drive actually occupies.
     """
     t = np.linspace(float(result.times[0]), float(result.times[-1]), 400)
+    live_lo, live_hi = np.inf, -np.inf
     for name in result.channels:
         aod = result.params.channels[name]
         t_c = t - 0.5 * aod.transit_time
@@ -245,15 +252,23 @@ def _drive_strip(ax: Any, result: SimResult) -> None:
             env = np.clip(np.asarray(tone.env.A(t_c), dtype=np.float64), 0.0, 1.0)
             points = np.column_stack([t / us, f])
             segments = np.stack([points[:-1], points[1:]], axis=1)
-            alpha = 0.25 + 0.75 * 0.5 * (env[:-1] + env[1:])
+            mean_env = 0.5 * (env[:-1] + env[1:])
+            alpha = np.where(mean_env > 0.0, 0.25 + 0.75 * mean_env, 0.0)
             ax.add_collection(
                 LineCollection(list(segments), colors=color, linewidths=1.6, alpha=alpha)
             )
+            if np.any(env > 0.0):
+                live_lo = min(live_lo, float(np.min(f[env > 0.0])))
+                live_hi = max(live_hi, float(np.max(f[env > 0.0])))
         ax.plot([], [], color=color, lw=1.6, label=name)
     ax.set_xlim(t[0] / us, t[-1] / us)
     ax.set_ylabel("drive [MHz]")
     ax.set_xlabel("t [µs]")
-    ax.autoscale_view()
+    if live_hi > live_lo:
+        margin = 0.08 * (live_hi - live_lo)
+        ax.set_ylim(live_lo - margin, live_hi + margin)
+    else:  # a single constant tone, or nothing live at all: let matplotlib decide
+        ax.autoscale_view()
     ax.legend(loc="upper left", fontsize=7, frameon=False, ncols=4, labelcolor="#d7dde5")
 
 

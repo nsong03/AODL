@@ -14,10 +14,20 @@ which in pupil variables read ``X_c = theta1_x F / k`` and
 
 Group aggregation uses power weights ``|c|^2`` (the intensity centroid a camera would report);
 for the single-term case, which is what the tests pin, weighting is irrelevant.
+
+**Two powers, two questions.**  :attr:`SpotMetrics.power` adds the group's terms in
+*intensity* and :attr:`SpotMetrics.power_coherent` adds them in *amplitude* first (the exact
+Gram form of :func:`_coherent_power`).  Terms in one group are degenerate, so the coherent
+number is the physical one; the two differ only when degenerate terms actually overlap in the
+image plane, which is exactly the Fig. S6 shadow-tweezer situation the fading-Shepard scheme
+is built to avoid (``docs/PLAN.md`` §1.3).  ``power`` stays the default weight everywhere —
+it is the per-spot bookkeeping quantity, insensitive to where a group's members sit — and
+``power_coherent`` is what to ask when the question is "how much light is really there".
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -32,9 +42,16 @@ from .focal import (
     _n_terms,
     group_terms,
 )
-from .gaussian import gauss_moments_lower
+from .gaussian import (
+    gauss_moments,
+    gauss_moments_lower,
+    gauss_moments_upper,
+    gauss_moments_window,
+)
 
+Complex = NDArray[np.complex128]
 Float = NDArray[np.float64]
+Index = NDArray[np.intp]
 
 
 @dataclass(frozen=True)
@@ -57,7 +74,16 @@ class SpotMetrics:
     power:
         ``sum_n |c_n|^2 int int |U_n|^2 dX dY`` over the group, on the same (prefactor-dropped)
         scale as :func:`aodl.field.focal.intensity_frame`.  Interference cross-terms inside a
-        group redistribute this power spatially but are not included here.
+        group redistribute this power spatially but are not included here — this is the
+        *incoherent* sum, and it is what every weighting in this package uses.
+    power_coherent:
+        ``int int |sum_n U_n|^2 dX dY`` over the same group: the terms added as *amplitudes*
+        first, cross-terms included (:func:`_coherent_power`).  Equal to ``power`` for a
+        one-term group, and to it within round-off whenever the group's members are further
+        apart than their pupil overlap allows; smaller (down to zero) when co-located
+        degenerate terms interfere destructively, larger when they add.  This is the number
+        the rendered frame integrates to, and the one the Fig. S6 static Mach-Zehnder pair of
+        a simultaneously fading AODL makes phase-dependent.
     df_opt:
         Optical frequency tag of the group [Hz] (power-weighted mean of its members).
     """
@@ -70,6 +96,7 @@ class SpotMetrics:
     wx: float
     wy: float
     power: float
+    power_coherent: float
     df_opt: float
 
 
@@ -180,11 +207,203 @@ def _term_power(terms: TermLike, optics: OpticsParams) -> Float:
     return np.abs(c) ** 2 * (optics.wavelength * optics.focal_length) ** 2 * s
 
 
+def _pair_indices(groups: Sequence[Index]) -> tuple[Index, Index, Index]:
+    """Every ``(j, k)`` pair inside every group, plus the group each pair belongs to.
+
+    The Gram sum is over ordered pairs (both ``(j, k)`` and ``(k, j)``), which is what makes
+    the accumulated result real by construction rather than by taking a real part of half of
+    it.  Groups are small — a group is a set of *exactly* degenerate terms — so the ``m^2``
+    is paid on a handful of members, while flattening every group's pairs into one array is
+    what keeps the closed forms below a single vectorized call per axis.
+    """
+    if not groups:
+        empty = np.zeros(0, dtype=np.intp)
+        return empty, empty, empty
+    j = np.concatenate([np.repeat(idx, idx.size) for idx in groups])
+    k = np.concatenate([np.tile(idx, idx.size) for idx in groups])
+    owner = np.concatenate(
+        [np.full(idx.size * idx.size, g, dtype=np.intp) for g, idx in enumerate(groups)]
+    )
+    return j.astype(np.intp), k.astype(np.intp), owner
+
+
+def _edge_value(power: int, u: Float, a: Complex, b: Complex) -> Complex:
+    """``u^power exp(-a u^2 + b u)`` at a finite bound, ``0`` where the bound is infinite.
+
+    The boundary term of the integration-by-parts recursion in :func:`_cross_moments`; an
+    infinite bound contributes nothing because ``Re(a) > 0`` kills the integrand there.
+    """
+    finite = np.isfinite(u)
+    safe = np.where(finite, u, 0.0)
+    value = safe**power * np.exp(-a * safe * safe + b * safe)
+    return np.asarray(np.where(finite, value, 0.0), dtype=np.complex128)
+
+
+def _cross_moments(a: Complex, b: Complex, lo: Float, hi: Float) -> Complex:
+    r"""Moments ``M_m = int_lo^hi u^m e^{-a u^2 + b u} du``, ``m = 0..4``, shape ``(5, n)``.
+
+    The complex, two-sided generalization of :func:`_window_moments`: ``b`` no longer
+    vanishes, because a *cross* term between two pupils carries their deflection difference
+    (:func:`_pupil_overlap_axis`).  ``m = 0, 1, 2`` come from :mod:`aodl.field.gaussian` —
+    full line, one edge, or a window, selected exactly as :func:`aodl.field.focal._axis_field`
+    selects them — and the two beyond its ``I_2`` follow from integrating
+    ``d/du [u^{m-1} e^{-a u^2 + b u}]`` over the same interval:
+
+        ``2 a M_m = [lo^{m-1} g(lo) - hi^{m-1} g(hi)] + (m - 1) M_{m-2} + b M_{m-1}``,
+
+    with ``g(u) = e^{-a u^2 + b u}`` and the boundary terms dropped at an infinite bound
+    (:func:`_edge_value`).  One formula therefore covers all four fill states, and it
+    reproduces the ``E_1``/``E_2`` recursion of :func:`aodl.field.gaussian.gauss_moments_lower`
+    at ``m = 1, 2``.
+    """
+    size = np.broadcast(a, b, lo, hi).size
+    m0 = np.zeros(size, dtype=np.complex128)
+    m1 = np.zeros(size, dtype=np.complex128)
+    m2 = np.zeros(size, dtype=np.complex128)
+    bounded_lo, bounded_hi = np.isfinite(lo), np.isfinite(hi)
+    branches = (
+        (~bounded_lo & ~bounded_hi, lambda m: gauss_moments(a[m], b[m])),
+        (bounded_lo & ~bounded_hi, lambda m: gauss_moments_lower(a[m], b[m], lo[m])),
+        (~bounded_lo & bounded_hi, lambda m: gauss_moments_upper(a[m], b[m], hi[m])),
+        (bounded_lo & bounded_hi, lambda m: gauss_moments_window(a[m], b[m], lo[m], hi[m])),
+    )
+    for mask, evaluate in branches:
+        if np.any(mask):
+            m0[mask], m1[mask], m2[mask] = evaluate(mask)
+
+    two_a = 2.0 * a
+    m3 = (_edge_value(2, lo, a, b) - _edge_value(2, hi, a, b) + 2.0 * m1 + b * m2) / two_a
+    m4 = (_edge_value(3, lo, a, b) - _edge_value(3, hi, a, b) + 3.0 * m2 + b * m3) / two_a
+    return np.stack([m0, m1, m2, m3, m4])
+
+
+def _pupil_overlap_axis(
+    alpha: Complex,
+    theta1: Float,
+    theta2: Float,
+    lo: Float,
+    hi: Float,
+    j: Index,
+    k: Index,
+    w_in: float,
+) -> Complex:
+    r"""One axis' pupil overlap ``O(j, k) = int p_j(u) conj(p_k(u)) du``, per pair.
+
+    With the pupil of :mod:`aodl.field.focal` (its ``a``/``b`` mapping at image coordinate
+    ``0``), ``p_j(u) = (alpha0 + alpha1 u + alpha2 u^2)_j exp(-a_j u^2 + i theta1_j u)``, so
+
+        ``p_j conj(p_k) = [poly_j conj(poly_k)](u) exp(-(a_j + conj(a_k)) u^2 + b_jk u)``,
+        ``a_j + conj(a_k) = 2 / w_in^2 - i (theta2_j - theta2_k)``,
+        ``b_jk = i (theta1_j - theta1_k)``.
+
+    The defocus ``Z`` sits inside ``a_j`` with a *common* sign for every term, so it cancels
+    in ``a_j + conj(a_k)``: the overlap — and hence the coherent power — is independent of the
+    plane it is evaluated at, as power conservation requires.  ``poly_j conj(poly_k)`` is kept
+    to its full degree 4 (:func:`_hermitian_cross`), which is what the field path's
+    ``|alpha0 I0 + alpha1 I1 + alpha2 I2|^2`` amounts to and what makes ``O(j, j)`` the
+    incoherent :func:`_pupil_power_axis` exactly.
+
+    The integration window is the *intersection* of the two terms' filled apertures; a pair
+    whose windows do not overlap contributes nothing.
+    """
+    a = np.asarray(2.0 / w_in**2 - 1j * (theta2[j] - theta2[k]), dtype=np.complex128)
+    b = np.asarray(1j * (theta1[j] - theta1[k]), dtype=np.complex128)
+    window_lo = np.maximum(lo[j], lo[k])
+    window_hi = np.minimum(hi[j], hi[k])
+    empty = window_lo >= window_hi
+    if np.any(empty):  # pragma: no cover - build_terms drops such a frame entirely
+        window_lo = np.where(empty, -np.inf, window_lo)
+        window_hi = np.where(empty, np.inf, window_hi)
+    r = _hermitian_cross(alpha[:, j], alpha[:, k])
+    overlap = (r * _cross_moments(a, b, window_lo, window_hi)).sum(axis=0)
+    return np.asarray(np.where(empty, 0.0, overlap), dtype=np.complex128)
+
+
+def _hermitian_cross(alpha_j: Complex, alpha_k: Complex) -> Complex:
+    """Coefficients of ``poly_j(u) conj(poly_k(u))``, degree 4, shape ``(5, n)``.
+
+    The cross-term generalization of the Hermitian square in :func:`_pupil_power_axis`, to
+    which it reduces (coefficient by coefficient) at ``j = k``.
+    """
+    a0, a1, a2 = alpha_j
+    b0, b1, b2 = np.conj(alpha_k)
+    return np.stack(
+        [
+            a0 * b0,
+            a0 * b1 + a1 * b0,
+            a0 * b2 + a1 * b1 + a2 * b0,
+            a1 * b2 + a2 * b1,
+            a2 * b2,
+        ]
+    )
+
+
+def _coherent_power(terms: TermLike, optics: OpticsParams, groups: Sequence[Index]) -> Float:
+    r"""Per-group ``int int |sum_n U_n|^2 dX dY`` — the exact Gram form, shape ``(n_groups,)``.
+
+    The same Parseval identity :func:`_term_power` uses, applied to a *pair* of terms: with
+    ``field_j(X) = int p_j(u) e^{-i k u X / F} du``,
+
+        ``int field_j conj(field_k) dX = lambda F int p_j conj(p_k) du``,
+
+    so a group's coherent power is the Gram sum
+
+    .. math::
+
+        P = (\lambda F)^2 \sum_{j,k} c_j c_k^* \, O_x(j,k)\, O_y(j,k)
+
+    over its members, with the per-axis pupil overlaps of :func:`_pupil_overlap_axis`.  The
+    diagonal is exactly :func:`_term_power`, so the result is the incoherent
+    :attr:`SpotMetrics.power` plus the cross-terms.  The sum is real because the ordered pairs
+    come in conjugate couples (:func:`_pair_indices`); the imaginary part is discarded at
+    round-off level.
+
+    Two terms interfere only where their pupils overlap, and ``O`` carries that: the overlap
+    of two spots ``Delta X`` apart is suppressed by ``exp(-(k w_in Delta X / (2 F))^2 / 2)``,
+    i.e. by their far-field separation in waists.  So co-located degenerate terms (the static
+    Mach-Zehnder pair of Fig. S6, an IM3 product landing on its own fundamental) interfere
+    fully, while the ``+- deflection_scale Delta f`` shadow tweezers — degenerate with each
+    other but tens of microns apart — do not, and their coherent power is their incoherent one.
+    """
+    n_groups = len(groups)
+    if n_groups == 0:
+        return np.zeros(0, dtype=np.float64)
+    n = _n_terms(terms)
+    j, k, owner = _pair_indices(groups)
+    theta1 = np.asarray(terms.theta1, dtype=np.float64)
+    theta2 = np.asarray(terms.theta2, dtype=np.float64)
+    alpha = np.asarray(terms.alpha, dtype=np.complex128)
+    c = np.asarray(terms.c, dtype=np.complex128).ravel()
+    edge = getattr(terms, "edge", None)
+
+    # On the diagonal the Gram weight *is* ``|c|^2``: writing it that way rather than as
+    # ``c conj(c)`` costs nothing, removes a cancellation, and — the reason it matters — makes
+    # the result independent of the term's overall phase, which a static drive advances from
+    # one frame to the next while nothing physical changes.
+    same = j == k
+    weight = np.asarray(
+        np.where(same, np.abs(c[j]) ** 2 + 0.0j, c[j] * np.conj(c[k])), dtype=np.complex128
+    )
+    gram = weight * (optics.wavelength * optics.focal_length) ** 2
+    for axis in range(2):
+        lo, hi = _axis_bounds(edge, axis, n)
+        gram = gram * _pupil_overlap_axis(
+            alpha[axis], theta1[axis], theta2[axis], lo, hi, j, k, optics.w_in
+        )
+    contribution = np.asarray(np.real(gram), dtype=np.float64)
+    return np.asarray(
+        np.bincount(owner, weights=contribution, minlength=n_groups), dtype=np.float64
+    )
+
+
 def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> list[SpotMetrics]:
     """Analytic metrics, one :class:`SpotMetrics` per frequency group (Table I quantities).
 
     Groups come from :func:`aodl.field.focal.group_terms` (default 1 kHz tolerance), so the
-    list matches the groups :func:`aodl.field.focal.intensity_frame` renders coherently.
+    list matches the groups :func:`aodl.field.focal.intensity_frame` renders coherently — and
+    each record carries both readings of that group's light: the incoherent
+    :attr:`SpotMetrics.power` and the exact Gram :attr:`SpotMetrics.power_coherent`
+    (:func:`_coherent_power`), which is the integral of the group's own rendered frame.
     """
     n = _n_terms(terms)
     if n == 0:
@@ -206,8 +425,11 @@ def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> li
     z_focus = Z_LAB_SIGN * 2.0 * focal**2 * theta2 / k
     waist0, rayleigh = optics.waist0, optics.rayleigh
 
+    groups = group_terms(terms, tol)
+    coherent = _coherent_power(terms, optics, groups)
+
     out: list[SpotMetrics] = []
-    for idx in group_terms(terms, tol):
+    for group, idx in enumerate(groups):
         w = weight[idx]
         total = float(w.sum())
         w = w / total if total > 0.0 else np.full(idx.size, 1.0 / idx.size)
@@ -230,6 +452,7 @@ def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> li
                 wx=float(radii[0] @ w),
                 wy=float(radii[1] @ w),
                 power=float(power[idx].sum()),
+                power_coherent=float(coherent[group]),
                 df_opt=float(df_opt[idx] @ w),
             )
         )

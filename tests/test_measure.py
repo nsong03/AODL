@@ -5,6 +5,11 @@ frozen ``device.aodl.TermArray`` layout (WO-03 §3).  Most assertions are algebr
 (``measure`` must return exactly the closed-form quantities the term was built from); the power
 closed form is checked against an independent numerical integral, both in the image plane (via
 ``intensity_frame``) and on the pupil side (via ``scipy.integrate.quad``).
+
+The last section covers ``power_coherent`` (WO-15 §2): the Gram form that adds a group's terms
+as *amplitudes*.  It is pinned the same way — against the rendered frame and against a direct
+pupil quadrature — plus the case it exists for: a co-located degenerate pair whose incoherent
+``power`` is finite while the light it describes is not there at all.
 """
 
 from __future__ import annotations
@@ -209,3 +214,181 @@ def test_power_closed_form_with_irising_and_fill_edge(params1030, side):
 
     (spot,) = measure(terms, optics)
     assert spot.power == pytest.approx(expected, rel=1e-10)
+
+
+# ============================================================ coherent (Gram) power, WO-15 §2
+
+
+def _pair(optics, c, separation=0.0, phase=0.0, alpha=None, edge=(None, None), z_focus=0.0):
+    """Two degenerate terms, the second displaced along x by ``separation`` [m].
+
+    ``theta1 = k X / F`` is the Table I deflection and ``theta2`` the per-axis focus, exactly
+    as in the single-term tests; both terms carry ``df_opt = 0``, so they land in one group
+    and :func:`aodl.field.measure.measure` adds them coherently.
+    """
+    k, focal = optics.k, optics.focal_length
+    theta1 = np.array([[0.0, separation * k / focal], [0.0, 0.0]])
+    theta2 = np.full((2, 2), Z_LAB_SIGN * z_focus * k / (2.0 * focal**2))
+    amplitudes = [c, c * np.exp(1j * phase)]
+    return make_terms(c=amplitudes, theta1=theta1, theta2=theta2, alpha=alpha, edge=edge)
+
+
+def _overlap_quad(alpha_j, alpha_k, theta1, theta2, bounds, w_in):
+    """``int p_j conj(p_k) du`` by direct quadrature — the closed form's reference."""
+
+    def pupil(u, coefficients, tilt, curvature):
+        poly = coefficients[0] + coefficients[1] * u + coefficients[2] * u * u
+        return poly * np.exp(-(u**2) / w_in**2 + 1j * (curvature * u * u + tilt * u))
+
+    def part(u, imaginary):
+        value = pupil(u, alpha_j, theta1[0], theta2[0]) * np.conj(
+            pupil(u, alpha_k, theta1[1], theta2[1])
+        )
+        return float(np.imag(value) if imaginary else np.real(value))
+
+    lo, hi = bounds
+    real = quad(part, lo, hi, args=(False,), limit=400)[0]
+    imaginary = quad(part, lo, hi, args=(True,), limit=400)[0]
+    return real + 1j * imaginary
+
+
+def test_power_coherent_is_the_incoherent_power_for_one_term_groups(params1030):
+    """A group of one has nothing to interfere with: the Gram is its own ``|c|^2`` diagonal.
+
+    Checked with the irising polynomial and with each fill state the pupil integral has —
+    full aperture, one wavefront, and the two-sided window of a filling pair — because the
+    diagonal of :func:`aodl.field.measure._coherent_power` re-derives the same number through
+    the *complex* moment family that the cross-terms need.
+    """
+    optics = params1030.optics
+    alpha = np.zeros((2, 3, 1), dtype=np.complex128)
+    alpha[:, 0, 0] = 1.0
+    alpha[0, 1, 0] = 0.4 / optics.w_in
+    alpha[1, 2, 0] = -0.6 / optics.w_in**2
+    edges = (
+        (None, None),
+        ((-0.4 * optics.w_in, "lower"), None),
+        ((0.5 * optics.w_in, "upper"), None),
+        ((-0.6 * optics.w_in, 0.9 * optics.w_in), None),
+    )
+    for edge in edges:
+        terms = make_terms(
+            c=[0.8 + 0.6j],
+            theta1=[[optics.k * optics.waist0 / optics.focal_length], [0.0]],
+            theta2=[[optics.k * optics.rayleigh / (2.0 * optics.focal_length**2)], [0.0]],
+            alpha=alpha,
+            edge=edge,
+        )
+        (spot,) = measure(terms, optics)
+        assert spot.power_coherent == pytest.approx(spot.power, rel=1e-12)
+
+    # Two *non*-degenerate terms are two groups, so neither sees the other either.
+    split = make_terms(
+        c=[1.0, 1.0], theta1=np.zeros((2, 2)), theta2=np.zeros((2, 2)), df_opt=[0.0, 3.0 * MHz]
+    )
+    for spot in measure(split, optics):
+        assert spot.power_coherent == pytest.approx(spot.power, rel=1e-12)
+
+
+def test_a_degenerate_destructive_pair_carries_no_light(params1030):
+    """The WO-04-era limitation, closed: ``power`` says 2, the field says 0, ``power_coherent``
+    says 0.
+
+    Two co-located terms at the same optical frequency and opposite sign are the extreme case
+    of the Fig. S6 static Mach-Zehnder: they cancel identically, everywhere.  The incoherent
+    ``power`` cannot express that — it adds ``|c|^2`` — which is exactly why the coherent
+    reading exists.  The constructive pair is the other half of the statement: 4x one term,
+    not 2x.
+    """
+    optics = params1030.optics
+    w0 = optics.waist0
+    single = measure(make_terms(c=[1.0], theta1=np.zeros((2, 1)), theta2=np.zeros((2, 1))), optics)
+    reference = single[0].power
+
+    (dark,) = measure(_pair(optics, 1.0, phase=np.pi), optics)
+    assert dark.power == pytest.approx(2.0 * reference, rel=1e-12)
+    assert abs(dark.power_coherent) < 1e-12 * reference
+
+    (bright,) = measure(_pair(optics, 1.0, phase=0.0), optics)
+    assert bright.power == pytest.approx(2.0 * reference, rel=1e-12)
+    assert bright.power_coherent == pytest.approx(4.0 * reference, rel=1e-12)
+
+    # ... and the frame agrees: the destructive pair renders black.
+    grid = FrameGrid(-6.0 * w0, 6.0 * w0, 41, -6.0 * w0, 6.0 * w0, 41)
+    frame = intensity_frame(_pair(optics, 1.0, phase=np.pi), optics, grid, 0.0)
+    assert float(frame.max()) < 1e-24 * reference / (w0 * w0)
+
+
+def test_power_coherent_is_the_rendered_frame_integral(params1030):
+    """Against the frame, at every separation from full overlap to none.
+
+    ``power_coherent`` is by construction ``int int |sum U|^2``, so a fine enough grid must
+    reproduce it whatever the two terms' phase and separation do to the fringe.  The sweep
+    also pins the physics of the overlap: at ``6 w0`` apart two degenerate terms no longer
+    interfere at all and the coherent reading collapses onto the incoherent one — which is
+    why the ``+- deflection_scale delta_f`` shadow tweezers do not need it, and a co-located
+    pair does.
+    """
+    optics = params1030.optics
+    w0 = optics.waist0
+    grid = FrameGrid(-40.0 * w0, 40.0 * w0, 1201, -40.0 * w0, 40.0 * w0, 1201)
+
+    for separation in (0.0, 0.7, 2.0, 6.0):
+        contrast = []
+        for phase in (0.0, 0.5 * np.pi, np.pi):
+            terms = _pair(optics, 1.0, separation=separation * w0, phase=phase)
+            (spot,) = measure(terms, optics)
+            integral = float(intensity_frame(terms, optics, grid, 0.0).sum()) * grid.dx * grid.dy
+            assert spot.power_coherent == pytest.approx(integral, rel=1e-6)
+            contrast.append(spot.power_coherent / spot.power)
+        assert contrast[1] == pytest.approx(1.0, rel=1e-9)  # quadrature: no net cross-term
+        if separation == 0.0:
+            assert contrast == [pytest.approx(2.0, rel=1e-9), pytest.approx(1.0), 0.0]
+        elif separation >= 6.0:
+            for value in contrast:
+                assert value == pytest.approx(1.0, rel=1e-6)
+
+
+def test_coherent_gram_matches_pupil_quadrature_with_irising_and_a_fill_edge(params1030):
+    """The Gram closed form, term by term, against ``quad`` on the pupil product.
+
+    The independent statement of ``P = (lambda F)^2 sum_jk c_j c_k^* O_x O_y``: the two terms
+    differ in deflection *and* in focus, carry different amplitude polynomials, and sit behind
+    a two-sided fill window, so every ingredient of the closed form is exercised at once.
+    """
+    optics = params1030.optics
+    k, focal, w_in = optics.k, optics.focal_length, optics.w_in
+    window = (-0.55 * w_in, 0.8 * w_in)
+    alpha = np.zeros((2, 3, 2), dtype=np.complex128)
+    alpha[:, 0, :] = 1.0
+    alpha[0, 1, :] = [0.30 / w_in, -0.15 / w_in]
+    alpha[0, 2, :] = [-0.20 / w_in**2, 0.05 / w_in**2]
+    alpha[1, 1, :] = [0.10 / w_in, 0.25 / w_in]
+    theta1 = np.array([[0.0, 1.4 * optics.waist0 * k / focal], [0.0, 0.0]])
+    theta2 = np.array(
+        [[0.0, Z_LAB_SIGN * 0.6 * optics.rayleigh * k / (2.0 * focal**2)], [0.0, 0.0]]
+    )
+    c = np.array([1.1 - 0.3j, 0.7 + 0.5j])
+    terms = make_terms(c=c, theta1=theta1, theta2=theta2, alpha=alpha, edge=(window, window))
+
+    expected = 0.0 + 0.0j
+    for j in range(2):
+        for m in range(2):
+            overlap = 1.0 + 0.0j
+            for axis in range(2):
+                overlap *= _overlap_quad(
+                    alpha[axis, :, j],
+                    alpha[axis, :, m],
+                    (theta1[axis, j], theta1[axis, m]),
+                    (theta2[axis, j], theta2[axis, m]),
+                    window,
+                    w_in,
+                )
+            expected += c[j] * np.conj(c[m]) * overlap
+    expected *= (optics.wavelength * focal) ** 2
+
+    (spot,) = measure(terms, optics)
+    assert abs(np.imag(expected)) < 1e-12 * abs(np.real(expected))
+    assert spot.power_coherent == pytest.approx(float(np.real(expected)), rel=1e-9)
+    # ... and the case is a real one: 1.4 waists apart, the two still interfere by 30%.
+    assert spot.power_coherent / spot.power == pytest.approx(1.2992, rel=1e-3)

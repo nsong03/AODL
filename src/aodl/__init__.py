@@ -31,6 +31,14 @@ order (``docs/ARCHITECTURE.md`` §1)::
     )
     wfs = synthesize(trajectory, p)   # band-checked; the tweezers lag the drive by tau/2
 
+    # ... or hold Z off the focal plane for as long as you like (M4, Eqs. S24-S28): fading
+    # Shepard ladders trade Eq. 1's one-sided budget for a bounded excursion
+    from aodl import Hold, ShepardConfig
+    from aodl.units import ms
+
+    forever = TrajectorySpec(array=ArraySpec(1, 1), moves=(Lift(10 * um, 60 * us), Hold(1 * ms)))
+    wfs = synthesize(forever, p, shepard="auto")          # or shepard=ShepardConfig(8e6, 6.5e6)
+
 Everything else stays one import away (``from aodl.device.aodl import build_terms``,
 ``from aodl.field import focal``, ...); SI units are used throughout, with the ``aodl.units``
 constants for boundary code.
@@ -53,6 +61,15 @@ from .poly import PiecewisePoly
 from .trajectory import ramps, spec
 from .trajectory.spec import ArraySpec, Hold, Lift, TrajectorySpec, Translate
 from .viz.movie import auto_grid, render_movie
+from .waveform.shepard import (
+    ChannelFade,
+    FadeZoneEnvelope,
+    ShepardConfig,
+    fade_window,
+    shepard_band_bound,
+    shepard_ladder,
+    table_ii,
+)
 from .waveform.synthesis import (
     add_common_ramp,
     array_tones,
@@ -77,14 +94,17 @@ __all__ = [
     "AODLParams",
     "AODParams",
     "ArraySpec",
+    "ChannelFade",
     "ChannelWaveform",
     "ConstantEnvelope",
     "Envelope",
+    "FadeZoneEnvelope",
     "FrameGrid",
     "Hold",
     "Lift",
     "OpticsParams",
     "PiecewisePoly",
+    "ShepardConfig",
     "SimResult",
     "SmoothOnOff",
     "SpotMetrics",
@@ -100,6 +120,7 @@ __all__ = [
     "build_terms",
     "default_1030",
     "f_z_ramp",
+    "fade_window",
     "intensity_frame",
     "intensity_slice_xz",
     "max_z_integral",
@@ -109,9 +130,12 @@ __all__ = [
     "ramps",
     "render_movie",
     "schroeder_phases",
+    "shepard_band_bound",
+    "shepard_ladder",
     "simulate",
     "spec",
     "synthesize",
+    "table_ii",
     "track_z",
     "units",
 ]
