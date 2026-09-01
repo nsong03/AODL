@@ -724,11 +724,18 @@ def ladder_phases(indices: ArrayLike, m: int) -> NDArray[np.float64]:
     progression that spreads the drive's crest and scatters the IM3 contributions
     (:mod:`aodl.waveform.synthesis`).  ``M = 1`` gives all-zero phases, because ``n(n-1)/2``
     is an integer.
+
+    The reduction is applied to ``n(n-1)/2`` — exactly an integer for an integer rung index —
+    *before* scaling by ``2 pi / M``, which is algebraically the formula above but keeps a
+    whole number of turns landing on exactly ``0``.  Reducing afterwards rounds such a rung to
+    ``2 pi - 7e-15`` instead (``M = 1``, ``n = 6``): the same phase physically, but it would
+    make the ``M = 1`` claim above false and put the result outside ``[0, 2 pi)``.
     """
     if int(m) < 1:
         raise ValueError(f"ladder width m must be a positive integer, got {m!r}")
+    width = float(int(m))
     n = np.asarray(indices, dtype=np.float64)
-    return np.mod(_TWO_PI * n * (n - 1.0) / (2.0 * int(m)), _TWO_PI)
+    return _TWO_PI * np.mod(0.5 * n * (n - 1.0), width) / width
 
 
 def active_indices(
