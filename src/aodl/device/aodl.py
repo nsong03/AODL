@@ -10,7 +10,7 @@ Fig. S6 for two tones per AOD).  Each term is separable in x and y and carries
     theta2   per-axis curvature   [rad/m^2]   -> defocus,     Z_S11 = 2 F^2 theta2 / k
     alpha    per-axis aperture amplitude polynomial (alpha0, alpha1, alpha2)
     df_opt   optical frequency offset [Hz], for frequency grouping in field/focal.py
-    edge     per-axis aperture fill edge (or None once the aperture is full)
+    edge     per-axis aperture fill state: one wavefront, two, or None once it is full
 
 so ``field/`` can evaluate it in closed form.  All signs come from
 :mod:`aodl.device.conventions`.
@@ -21,19 +21,31 @@ is ``(1, -s (A'/A) / v, (A''/A) / (2 v^2))``, and ``alpha`` is the degree-2 trun
 product of those over the channels sharing an axis.  Constant envelopes therefore give
 ``alpha = (1, 0, 0)`` and the field reduces to ``c * I0``.
 
+**Aperture fill.**  Each partially filled channel constrains its axis to one half-line
+(``docs/conventions.md`` §7); the channels sharing an axis are *intersected*, so a
+counter-propagating pair driven from ``t = 0`` leaves the two-sided window
+``[D/2 - v t, v t - D/2]`` — empty until ``t = tau/2``, the whole aperture at ``t = tau``.
+The result rides on :attr:`TermArray.edge` as ``None`` (full), a
+:class:`~aodl.device.conventions.FillEdge` (one-sided) or a :class:`FillWindow`
+(two-sided); see :func:`_axis_interval`.
+
 **Pruning.**  With intra-AOD mixing on (:mod:`aodl.device.mixing`) a channel carries
 ``O(M^3)`` lines and the product carries the *product* of those counts, most of which are
 negligible: a term whose ``|c|`` is a fraction ``eps`` of the strongest one contributes
 ``~eps^2`` of relative intensity, so dropping everything below
 ``term_prune = 1e-6`` bounds the relative intensity error at ``~1e-12`` while cutting the
 term count sharply.  The discarded power is reported in :attr:`TermArray.pruned_power`.
+The same cut is applied **before** the product as well (:func:`_pre_cut_lines`), which is
+lossless and keeps the combinatorics from being paid for terms that are about to be thrown
+away; :data:`MAX_TERMS` then bounds what is left.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -49,6 +61,42 @@ N_ALPHA = 3
 #: Default term-level amplitude cut of :func:`build_terms`, as a fraction of the strongest
 #: term's ``|c|``.  Relative intensity error scales as its square (~``1e-12``).
 TERM_PRUNE = 1e-6
+
+#: Default ceiling on the Cartesian term count of :func:`build_terms`.  Terms are cheap
+#: individually (~130 bytes across ``c``, ``theta``, ``alpha`` and ``df_opt``) but multiply:
+#: four channels carrying a few hundred lines each would ask for ``10^10`` of them.  The
+#: limit turns that into a message naming the per-channel line counts instead of a
+#: multi-minute allocation.
+MAX_TERMS = 200_000
+
+
+class FillWindow(NamedTuple):
+    """Two-sided aperture fill window: acoustic content on ``lo <= u <= hi``.
+
+    Emitted for an axis whose two counter-propagating channels are *both* still filling
+    (``docs/conventions.md`` §7): ``sound_sign = -1`` holds content at ``u >= D/2 - v t``,
+    ``+1`` at ``u <= v t - D/2``, and light has to cross both crystals, so it sees the
+    intersection.  :mod:`aodl.field.focal` reads this structurally — by the ``lo`` / ``hi``
+    fields — and routes it to :func:`aodl.field.gaussian.gauss_moments_window`.
+
+    A one-sided axis keeps :class:`~aodl.device.conventions.FillEdge` and a fully filled one
+    stays ``None``, both unchanged from M1.
+
+    Attributes
+    ----------
+    lo, hi:
+        Aperture coordinates [m] of the two wavefronts, ``lo`` from the ``sound_sign = -1``
+        channel and ``hi`` from the ``+1`` one.  ``lo >= hi`` marks an *empty* window (the
+        waves have not met yet): the frame is then dark and :func:`build_terms` drops every
+        term, so the empty record is a diagnostic and is never integrated over.
+    """
+
+    lo: float
+    hi: float
+
+
+#: Fill state of one axis: ``None`` (full aperture), one wavefront, or two.
+AxisFill = FillEdge | FillWindow | None
 
 
 @dataclass(frozen=True)
@@ -73,9 +121,11 @@ class TermArray:
         sharing a value (within tolerance) interfere; different values beat at MHz rates
         and add in intensity (``docs/PLAN.md`` §1.3).
     edge:
-        Per-axis aperture fill edge, ``(edge_x, edge_y)``; an entry is ``None`` when that
-        axis is fully filled.  The fill state depends only on the frame time and the
-        channel geometry, so it is shared by every term of the frame.
+        Per-axis aperture fill state, ``(edge_x, edge_y)``: ``None`` when that axis is fully
+        filled, a :class:`~aodl.device.conventions.FillEdge` when one wavefront bounds it,
+        and a :class:`FillWindow` when the axis' counter-propagating pair bounds it from
+        both sides.  The fill state depends only on the frame time and the channel geometry,
+        so it is shared by every term of the frame.
     pruned_power:
         Diagnostic: the ``sum |c|^2`` that pruning removed from this frame — the terms cut
         here plus the per-channel lines cut by :mod:`aodl.device.mixing`, carried through
@@ -88,7 +138,7 @@ class TermArray:
     theta2: NDArray[np.float64]
     alpha: NDArray[np.complex128]
     df_opt: NDArray[np.float64]
-    edge: tuple[FillEdge | None, FillEdge | None] = field(default=(None, None))
+    edge: tuple[AxisFill, AxisFill] = field(default=(None, None))
     pruned_power: float = 0.0
 
     @property
@@ -130,22 +180,88 @@ def _multiply_poly(acc: NDArray[Any], factor: Sequence[NDArray[Any]]) -> NDArray
     return np.asarray(product, dtype=np.complex128)
 
 
-def _axis_edge(edges: Sequence[FillEdge]) -> FillEdge | None:
-    """Combine the fill edges of the channels sharing one axis."""
-    if not edges:
-        return None
-    if len(edges) == 1:
-        return edges[0]
-    sides = {edge.side for edge in edges}
-    if len(sides) > 1:
-        raise NotImplementedError(
-            "counter-propagating channels on one axis are partially filled from opposite "
-            "sides, which needs a two-sided aperture window; wait until the aperture is "
-            "full (t >= tau) or drive one side at a time"
-        )
-    side = sides.pop()
-    positions = [edge.u_edge for edge in edges]
-    return FillEdge(u_edge=max(positions) if side == "lower" else min(positions), side=side)
+def _axis_interval(edges: Sequence[FillEdge]) -> tuple[float, float]:
+    """Intersect the filled half-lines of the channels sharing one axis (Eq. S4 timing).
+
+    Every partially filled channel constrains its axis to the half-line containing its own
+    transducer — ``u >= u_edge`` for ``side = "lower"`` (``sound_sign = -1``), ``u <= u_edge``
+    for ``"upper"`` (``+1``) — and a channel that is already full contributes no constraint
+    at all (:func:`aodl.device.aod.fill_edge` returns ``None`` and it never reaches
+    ``edges``).  The light has to cross all of them, so the axis transmits on the
+    intersection, returned as ``(lo, hi)`` with ``-inf`` / ``+inf`` for an unbounded side.
+
+    For a counter-propagating pair driven from ``t = 0`` this is ``[D/2 - v t, v t - D/2]``:
+    **empty until ``t = tau/2``** — both wavefronts have to reach a point before anything
+    gets through it, so a pair-driven tweezer is strictly dark for the first half transit —
+    then growing to the full aperture at ``t = tau``.
+    """
+    lo, hi = -math.inf, math.inf
+    for edge in edges:
+        if edge.side == "lower":
+            lo = max(lo, edge.u_edge)
+        else:
+            hi = min(hi, edge.u_edge)
+    return lo, hi
+
+
+def _axis_fill(interval: tuple[float, float]) -> AxisFill:
+    """Fill record for one axis' intersected interval (see :attr:`TermArray.edge`)."""
+    lo, hi = interval
+    if not math.isfinite(lo):
+        return None if not math.isfinite(hi) else FillEdge(u_edge=hi, side="upper")
+    if not math.isfinite(hi):
+        return FillEdge(u_edge=lo, side="lower")
+    return FillWindow(lo=lo, hi=hi)
+
+
+def _pre_cut_lines(line: Lines, term_prune: float) -> Lines:
+    """Drop the lines of one channel that cannot survive the post-product cut.
+
+    **Why this is lossless.**  The channel product is Cartesian, so the strongest term is the
+    product of the per-channel strongest lines, ``max|c| = prod_mu max_l |amp^mu_l|``, and a
+    term using line ``l`` of channel ``mu`` obeys
+    ``|c| <= |amp^mu_l| prod_{nu != mu} max|amp^nu|``.  Hence
+
+        |amp^mu_l| < term_prune * max|amp^mu|   ==>   |c| < term_prune * max|c|
+
+    for *every* term that line takes part in: they are all below the post-product cut of
+    :func:`build_terms` and would be dropped there anyway.  Cutting the line here removes
+    them from the combinatorics instead of from the result — same term set, at
+    ``sum(n_mu)`` cost instead of ``prod(n_mu)``.
+
+    The dropped ``sum |amp|^2`` is folded into the channel's own ``pruned_power``, so
+    :func:`_lines_pruned_power` carries it through the product like any other line-level cut.
+    ``term_prune = 0`` (and a channel whose lines are all zero) drops nothing.
+    """
+    if term_prune <= 0.0 or line.n_lines == 0:
+        return line
+    magnitude = np.abs(line.amp)
+    keep = magnitude >= float(term_prune) * float(magnitude.max())
+    if bool(keep.all()):
+        return line
+    return Lines(
+        amp=line.amp[keep],
+        f=line.f[keep],
+        fdot=line.fdot[keep],
+        A=line.A[keep],
+        dA=line.dA[keep],
+        d2A=line.d2A[keep],
+        pruned_power=line.pruned_power + float(np.sum(magnitude[~keep] ** 2)),
+    )
+
+
+def _too_many_terms(names: Sequence[str], counts: Sequence[int], n: int, max_terms: int) -> str:
+    """Message for a Cartesian product that would exceed ``max_terms``."""
+    per_channel = ", ".join(f"{name}: {count}" for name, count in zip(names, counts, strict=True))
+    return (
+        f"the pupil term product would hold {n} terms, above max_terms={max_terms}.  "
+        f"Lines per channel after the pre-product amplitude cut — {per_channel} — and the "
+        f"product is Cartesian (Eq. S7), so the count is their product.  Non-commensurate "
+        f"multi-tone drives blow up here because nothing merges: tighten "
+        f"MixingConfig.line_prune (fewer intermodulation lines per channel) or term_prune "
+        f"(a harder pre-product cut), drive fewer tones, or raise max_terms if this many "
+        f"terms really is what you want."
+    )
 
 
 def _lines_pruned_power(lines: Sequence[Lines]) -> float:
@@ -171,6 +287,7 @@ def build_terms(
     t: float,
     channels: Sequence[str] | None = None,
     term_prune: float = TERM_PRUNE,
+    max_terms: int = MAX_TERMS,
 ) -> TermArray:
     """Expand a :class:`~aodl.waveform.tones.WaveformSet` into pupil terms at time ``t``.
 
@@ -180,8 +297,17 @@ def build_terms(
     listed contribute an identity factor — a bare AOD-less axis has ``theta1 = theta2 = 0``
     and ``alpha = (1, 0, 0)``, i.e. just the input Gaussian.
 
-    Terms below the amplitude cut are then dropped: with mixing on, the Cartesian product
-    of ``O(M^3)`` line sets is dominated by combinations far too weak to see.
+    The amplitude cut runs twice, to the same threshold and with the same result: once per
+    channel *before* the product (:func:`_pre_cut_lines`, lossless — see its proof) and once
+    on the terms afterwards.  With mixing on, the Cartesian product of ``O(M^3)`` line sets
+    is dominated by combinations far too weak to see.
+
+    Each channel's aperture fill state is intersected per axis (:func:`_axis_interval`), so a
+    counter-propagating pair sees the two-sided window ``[D/2 - v t, v t - D/2]``.  While
+    that window is **empty** — ``t < tau/2``, before the two wavefronts meet — no light
+    reaches the image plane at all, and the frame is returned with *no terms* rather than
+    with zero-amplitude ones (``field/`` short-circuits to a black frame).  Nothing is
+    approximated away there, so ``pruned_power`` is ``0`` for such a frame.
 
     Parameters
     ----------
@@ -195,12 +321,26 @@ def build_terms(
     term_prune:
         Drop terms with ``|c| < term_prune * max |c|`` (relative intensity error
         ``~term_prune^2``); ``0`` keeps every term.  Nothing is ever dropped when the
-        strongest term is itself zero, so the result always holds at least one term.
+        strongest term is itself zero, so a frame whose drive is simply off still holds one
+        term.
+    max_terms:
+        Ceiling on the Cartesian product (:data:`MAX_TERMS`).  Exceeding it raises
+        ``ValueError`` naming the per-channel line counts, instead of allocating for
+        minutes: non-commensurate multi-tone drives merge nothing, so their line sets
+        multiply out unchecked.
 
     Returns
     -------
     :class:`TermArray` with at most ``N = prod(lines per channel)`` terms (``N = 1`` when no
-    channel is driven), carrying the pruned power as a diagnostic.
+    channel is driven, ``N = 0`` when an axis' fill window is empty), carrying the pruned
+    power as a diagnostic.
+
+    Raises
+    ------
+    ValueError
+        If the post-cut product would exceed ``max_terms``.
+    KeyError
+        If a requested channel is absent from ``wfs``.
     """
     available = dict(wfs.channels)
     names = tuple(available) if channels is None else tuple(channels)
@@ -210,8 +350,14 @@ def build_terms(
 
     geoms = [conventions.geometry(name) for name in names]
     aods = [wfs.params.channels[name] for name in names]
-    lines = [channel_lines(available[name], aod, t) for name, aod in zip(names, aods, strict=True)]
+    lines = [
+        _pre_cut_lines(channel_lines(available[name], aod, t), term_prune)
+        for name, aod in zip(names, aods, strict=True)
+    ]
     counts = [line.n_lines for line in lines]
+    product = int(np.prod(counts)) if counts else 1
+    if product > max_terms:
+        raise ValueError(_too_many_terms(names, counts, product, max_terms))
     shape = tuple(counts)
 
     amplitude = np.ones(shape if shape else (1,), dtype=np.complex128)
@@ -235,18 +381,28 @@ def build_terms(
         if edge is not None:
             axis_edges[axis].append(edge)
 
-    n_terms = int(np.prod(counts)) if counts else 1
+    n_terms = product
     c = np.ascontiguousarray(amplitude).reshape(n_terms)
     theta1 = theta1.reshape(N_AXES, n_terms)
     theta2 = theta2.reshape(N_AXES, n_terms)
     alpha = alpha.reshape(N_AXES, N_ALPHA, n_terms)
     df_opt = np.asarray(df_opt, dtype=np.float64).reshape(n_terms)
 
-    pruned = _lines_pruned_power(lines)
-    # `initial` keeps an undriven-but-listed channel (zero lines, so zero terms) working.
-    keep = np.abs(c) >= float(term_prune) * float(np.abs(c).max(initial=0.0))
+    intervals = [_axis_interval(axis_edges[axis]) for axis in range(N_AXES)]
+    dark = any(lo >= hi for lo, hi in intervals)
+    if dark:
+        # No point of the aperture has been reached by every channel's sound yet, so the
+        # frame carries no light: drop every term (their amplitude is exactly 0) and report
+        # no pruned power — this is the physics of the fill transient, not an approximation.
+        pruned = 0.0
+        keep = np.zeros(n_terms, dtype=bool)
+    else:
+        pruned = _lines_pruned_power(lines)
+        # `initial` keeps an undriven-but-listed channel (zero lines, so zero terms) working.
+        keep = np.abs(c) >= float(term_prune) * float(np.abs(c).max(initial=0.0))
+        if not keep.all():
+            pruned += float(np.sum(np.abs(c[~keep]) ** 2))
     if not keep.all():
-        pruned += float(np.sum(np.abs(c[~keep]) ** 2))
         c, theta1, theta2 = c[keep], theta1[:, keep], theta2[:, keep]
         alpha, df_opt = alpha[:, :, keep], df_opt[keep]
 
@@ -256,9 +412,17 @@ def build_terms(
         theta2=theta2,
         alpha=alpha,
         df_opt=df_opt,
-        edge=(_axis_edge(axis_edges[0]), _axis_edge(axis_edges[1])),
+        edge=(_axis_fill(intervals[0]), _axis_fill(intervals[1])),
         pruned_power=pruned,
     )
 
 
-__all__ = ["N_ALPHA", "TermArray", "build_terms"]
+__all__ = [
+    "MAX_TERMS",
+    "N_ALPHA",
+    "TERM_PRUNE",
+    "AxisFill",
+    "FillWindow",
+    "TermArray",
+    "build_terms",
+]

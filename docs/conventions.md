@@ -216,6 +216,15 @@ Two consequences:
   diagnostic that *does* return the literal `[-D/2, +D/2]` waveform on the crystal (carrier
   included), for plotting the startup transient.
 
+  **Counter-propagating pairs (two channels on one axis).** Each channel contributes its
+  filled half-line; `device/aodl.py:_axis_interval` intersects them. For an Ax+Bx pair
+  starting together at `t = 0` the intersection is `[D/2 − vt, vt − D/2]`: **empty for
+  `t < tau/2`** (both waves must reach a point before the pair diffracts there), so a
+  pair-driven tweezer is strictly dark until `tau/2`, then grows with window
+  `FillWindow(lo, hi)` and `gauss_moments_window(a, b, lo, hi)` until full at `tau`.
+  Empty intersection ⇒ the term is dropped (darkness is physics, not pruning — it does
+  not count toward `pruned_power`).
+
 ---
 
 ## 8. Summary table

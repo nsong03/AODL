@@ -12,13 +12,22 @@ examples/03_aodl_3d_motion.ipynb
 examples/04_array_lift_traverse.ipynb
 tests/test_integration_m3.py
 tests/test_integration_m2.py      (edit ONLY §cleanup below)
+src/aodl/field/measure.py         (edit ONLY per §0 assigned fix)
 src/aodl/viz/movie.py             (edit only if §2 needs a small hook; keep minimal)
 ```
 
 ## 0. Integration duties
 
-Full `pytest` first; reconcile any Wave-H friction with the smallest change, work orders
-as truth; report every reconciliation. Then build.
+Full `pytest` first — note WO-10 and WO-11 each ran with the other's test files ignored,
+so yours is the first combined run; reconcile any Wave-H friction with the smallest
+change, work orders as truth; report every reconciliation. Then build.
+
+**Assigned fix (WO-10 finding 1, architect-approved; `src/aodl/field/measure.py` added to
+your owned files):** `measure()`'s per-term power integrates `u ≥ lo` when the fill state
+is a two-sided `FillWindow`, over-estimating during pair transients (×4.89 at 0.55τ →
+×1.0007 at 0.95τ). Route `measure._pupil_power_axis` through `focal._axis_bounds` and add
+the two-sided branch to its moment helper (`gauss_moments_window`); add a regression test
+(power ratio vs frame integral ≈ 1 at 0.55τ and 0.75τ on a pair-driven spot).
 
 ## 1. `examples/03_aodl_3d_motion.ipynb` — the 3D-AODL physics notebook
 

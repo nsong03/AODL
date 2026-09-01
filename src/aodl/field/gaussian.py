@@ -8,11 +8,12 @@ moments implemented here (Eq. S11 evaluated in closed form — no FFTs anywhere)
 deflection and the image coordinate.  Both are complex with ``Re(a) > 0``; every function
 is vectorized over numpy broadcasting and returns ``complex128``.
 
-Three families:
+Four families:
 
 * full line     ``I_n(a, b)        = \int_{-inf}^{+inf} u^n e^{-a u^2 + b u} du``
 * lower edge    ``E_n(a, b, u0)    = \int_{u0}^{+inf}   u^n e^{-a u^2 + b u} du``
 * upper edge    ``F_n(a, b, u1)    = \int_{-inf}^{u1}   u^n e^{-a u^2 + b u} du``
+* window        ``W_n(a, b, u0, u1) = \int_{u0}^{u1}    u^n e^{-a u^2 + b u} du``
 
 The edge families model a partially filled aperture (the acoustic wavefront still
 entering the crystal), and are computed through the scaled complementary error function
@@ -24,6 +25,11 @@ The edge itself is not an optical aperture: it is the acoustic fill boundary
 the Eq. S11 pupil integral to the half-line the sound has reached.  The input beam is
 modelled as an uncropped Gaussian (``docs/PLAN.md`` §1.5, decision 2), so this is the only
 window the field integrals ever see.
+
+The two-sided ``W_n`` is what a **counter-propagating pair** needs: while both crystals of
+one axis are still filling, each contributes its own half-line and the light that gets
+through sees their intersection ``[D/2 - v t, v t - D/2]`` — empty until ``t = tau/2``, the
+whole aperture at ``t = tau``.
 """
 
 from __future__ import annotations
@@ -133,9 +139,67 @@ def gauss_moments_upper(
     return _squeeze(np.asarray(f0)), _squeeze(-np.asarray(f1)), _squeeze(np.asarray(f2))
 
 
+def gauss_moments_window(
+    a: ArrayLike, b: ArrayLike, u0: ArrayLike, u1: ArrayLike
+) -> tuple[Complex, Complex, Complex]:
+    r"""Window moments ``W_n(a, b, u0, u1) = \int_{u0}^{u1} u^n e^{-a u^2 + b u} du``.
+
+    The Eq. S11 axis integral over an aperture filled **only between two wavefronts** — the
+    window a counter-propagating pair leaves while both acoustic columns are still entering
+    their crystals (``docs/conventions.md`` §7).  Channel ``sound_sign = -1`` fills
+    ``u >= D/2 - v t`` and channel ``+1`` fills ``u <= v t - D/2``, so the light crossing
+    both sees ``[D/2 - v t, v t - D/2]``: empty for ``t < tau/2`` (a point only transmits
+    once *both* waves have reached it), the whole aperture at ``t = tau``.
+
+    Written as a difference of the lower-edge family,
+
+        W_n(a, b, u0, u1) = E_n(a, b, u0) - E_n(a, b, u1),
+
+    so it inherits the ``erfcx`` scaling — and hence the range safety — of
+    :func:`gauss_moments_lower`.  ``u0 < u1`` is required (compared on the real parts, the
+    bounds being physical aperture coordinates): an empty or reversed window has no moments,
+    and its term is dark, which :func:`aodl.device.aodl.build_terms` handles by dropping the
+    term rather than by calling this function.
+
+    Note
+    ----
+    **Cancellation caveat.**  The difference is benign when the window contains, or is
+    bounded by, the integrand's peak.  When *both* edges sit far out on the same tail the
+    two ``E_n`` are nearly equal — each close to the full-line ``I_n`` on the left tail, or
+    each exponentially small on the right — and the subtraction loses digits: the *absolute*
+    error stays at roundoff times the larger operand (at worst ``~eps |I_n|``), so the
+    *relative* error of ``W_n`` grows as ``|I_n| / |W_n|``.
+
+    This is harmless in the optical model, because such a window passes essentially no
+    light: the term it belongs to is negligible next to any fully filled one, and the error
+    it carries is bounded by ``eps`` times the full-aperture term it is being compared
+    against — never by ``eps`` times something big and visible.  ``tests/test_window.py``
+    pins the crossover: agreement with quadrature holds to 1e-9 relative wherever
+    ``|W0| > 1e-12 |I0|``, and degrades only below that, where the absolute error stays
+    ``< 1e-13 |I0|``.
+    """
+    a = _as_complex(a)
+    b = _as_complex(b)
+    lo = _as_complex(u0)
+    hi = _as_complex(u1)
+    _check_a(a)
+    if not np.all(np.real(lo) < np.real(hi)):
+        raise ValueError(
+            "gauss_moments_window needs u0 < u1: an empty or reversed aperture window has "
+            "no moments (its term is dark and should be dropped instead)"
+        )
+    e0, e1, e2 = gauss_moments_lower(a, b, lo)
+    f0, f1, f2 = gauss_moments_lower(a, b, hi)
+    w0 = np.asarray(e0) - np.asarray(f0)
+    w1 = np.asarray(e1) - np.asarray(f1)
+    w2 = np.asarray(e2) - np.asarray(f2)
+    return _squeeze(w0), _squeeze(w1), _squeeze(w2)
+
+
 __all__ = [
     "erfcx_complex",
     "gauss_moments",
     "gauss_moments_lower",
     "gauss_moments_upper",
+    "gauss_moments_window",
 ]

@@ -18,7 +18,9 @@ with the mapping pinned by ``tests/test_focal_geometry.py``::
     U_term(X, Y) = c * field_x(X) * field_y(Y)
 
 A term whose aperture is still filling carries a fill edge on that axis; the full-line moments
-``I_n`` are then replaced by the edge moments ``E_n`` / ``F_n`` of the same module.
+``I_n`` are then replaced by the edge moments ``E_n`` / ``F_n`` of the same module — or, when
+the axis' counter-propagating pair is filling from *both* sides at once, by the two-sided
+window moments ``W_n``.
 
 **Dropped prefactors (intensity-safe).**  ``1/(i lambda F)``, the propagation phase
 ``e^{i k F}`` and the common image curvature ``e^{i k (X^2+Y^2)/(2F)}`` are omitted, exactly as
@@ -50,7 +52,12 @@ from numpy.typing import ArrayLike, NDArray
 from ..device.conventions import Z_LAB_SIGN
 from ..params import OpticsParams
 from ..units import kHz
-from .gaussian import gauss_moments, gauss_moments_lower, gauss_moments_upper
+from .gaussian import (
+    gauss_moments,
+    gauss_moments_lower,
+    gauss_moments_upper,
+    gauss_moments_window,
+)
 
 Complex = NDArray[np.complex128]
 Float = NDArray[np.float64]
@@ -70,8 +77,8 @@ PATCH_WAISTS: float = 4.0
 #: Number of transverse axes (0 = x, 1 = y).
 N_AXES: int = 2
 
-# Internal fill-edge side codes.
-_NO_EDGE, _LOWER, _UPPER = 0, 1, -1
+# Internal fill-edge side codes (``_WINDOW`` = bounded on both sides; see `_axis_edges`).
+_NO_EDGE, _LOWER, _UPPER, _WINDOW = 0, 1, -1, 2
 _SIDE_WORDS = {"lower": _LOWER, "low": _LOWER, "upper": _UPPER, "up": _UPPER, "none": _NO_EDGE}
 
 
@@ -112,7 +119,8 @@ class TermLike(Protocol):
 
     @property
     def edge(self) -> Any:
-        """Optional per-axis aperture fill edge, ``(edge_x, edge_y)``; see :func:`_axis_edges`."""
+        """Optional per-axis aperture fill state, ``(edge_x, edge_y)``; see
+        :func:`_axis_bounds`."""
 
 
 @dataclass(frozen=True)
@@ -164,13 +172,24 @@ class FrameGrid:
 
 @dataclass(frozen=True)
 class _AxisTerms:
-    """One axis of a term array, unpacked into plain arrays."""
+    """One axis of a term array, unpacked into plain arrays.
+
+    ``lo`` / ``hi`` are the aperture fill bounds of :func:`_axis_bounds`: ``-inf`` / ``+inf``
+    where the acoustic column has already passed, so a fully filled axis is
+    ``(-inf, +inf)``, a one-sided fill has exactly one finite bound and a
+    counter-propagating pair mid-fill has two.
+    """
 
     theta1: Float
     theta2: Float
     alpha: Complex
-    u0: Float
-    side: NDArray[np.int8]
+    lo: Float
+    hi: Float
+
+    @property
+    def windowed(self) -> NDArray[np.bool_]:
+        """Per term: is this axis' pupil truncated by an acoustic wavefront?"""
+        return np.asarray(np.isfinite(self.lo) | np.isfinite(self.hi))
 
     def take(self, idx: Index) -> _AxisTerms:
         """Subset of the terms (used per frequency group)."""
@@ -178,8 +197,8 @@ class _AxisTerms:
             theta1=self.theta1[idx],
             theta2=self.theta2[idx],
             alpha=self.alpha[:, idx],
-            u0=self.u0[idx],
-            side=self.side[idx],
+            lo=self.lo[idx],
+            hi=self.hi[idx],
         )
 
 
@@ -233,50 +252,124 @@ def _edge_pair(item: Any, n: int) -> tuple[Float, NDArray[np.int8]] | None:
     return u0, side
 
 
-def _axis_edges(edge: Any, axis: int, n: int) -> tuple[Float, NDArray[np.int8]]:
-    """Normalize a term array's ``edge`` field into ``(u0, side)`` arrays of length ``n``.
+def _window_pair(item: Any, n: int) -> tuple[Float, Float] | None:
+    """Read a two-sided ``(lo, hi)`` fill window, broadcast over ``n`` terms.
 
-    ``side`` is ``+1`` when the aperture holds content at ``u >= u0`` (lower-edge moments,
-    ``sound_sign = -1``), ``-1`` for ``u <= u0`` (upper-edge moments, ``sound_sign = +1``) and
-    ``0`` when that axis is fully filled — the convention documented by ``device/aod.py``
-    (``filled side is s u <= v t - D/2``).
+    Recognized either by field name — ``device.aodl``'s ``FillWindow(lo, hi)``, which is how
+    the device layer always sends one — or as a plain pair whose second entry is *not* a side
+    specification.  That is what keeps the two 2-tuple forms apart: a side is one of
+    ``-1, 0, +1, "lower", "upper"``, while an aperture coordinate is a length in meters and
+    is never any of those (``+-1 m`` would be a hundred apertures out).
+    """
+    if hasattr(item, "lo") and hasattr(item, "hi"):
+        raw_lo, raw_hi = item.lo, item.hi
+    else:
+        try:
+            raw_lo, raw_hi = item
+        except (TypeError, ValueError):
+            return None
+        if raw_lo is None or raw_hi is None or _side_codes(raw_hi, n) is not None:
+            return None
+    try:
+        lo = np.asarray(raw_lo, dtype=np.float64).ravel()
+        hi = np.asarray(raw_hi, dtype=np.float64).ravel()
+    except (TypeError, ValueError):
+        return None
+    return (
+        np.broadcast_to(lo, (n,)).astype(np.float64),
+        np.broadcast_to(hi, (n,)).astype(np.float64),
+    )
 
-    WO-03 §3 froze this field only as "per-axis fill-edge info ``(u0 or None, side)``", so
-    several shapes are accepted:
+
+def _entry_bounds(item: Any, n: int) -> tuple[Float, Float] | None:
+    """One fill record — half-line ``(u0, side)`` or window ``(lo, hi)`` — as ``(lo, hi)``."""
+    window = _window_pair(item, n)
+    if window is not None:
+        return window
+    pair = _edge_pair(item, n)
+    if pair is None:
+        return None
+    u0, side = pair
+    lo = np.where(side == _LOWER, u0, -np.inf)
+    hi = np.where(side == _UPPER, u0, np.inf)
+    return lo.astype(np.float64), hi.astype(np.float64)
+
+
+def _axis_bounds(edge: Any, axis: int, n: int) -> tuple[Float, Float]:
+    """Normalize a term array's ``edge`` field into per-term fill bounds ``(lo, hi)``.
+
+    The aperture holds acoustic content on ``lo <= u <= hi``, with ``-inf`` / ``+inf`` for a
+    side the sound has already crossed — so ``(-inf, +inf)`` is a fully filled axis,
+    ``(u0, +inf)`` the ``sound_sign = -1`` half-line (lower-edge moments ``E_n``),
+    ``(-inf, u1)`` the ``+1`` half-line (upper-edge moments ``F_n``) and a pair of finite
+    bounds the two-sided window of a counter-propagating pair (window moments ``W_n``).
+    This is the ``s u <= v t - D/2`` convention of ``device/aod.py``, intersected per axis by
+    ``device/aodl.py``.
+
+    WO-03 §3 froze this field only as "per-axis fill-edge info ``(u0 or None, side)``", and
+    WO-10 added the window, so several shapes are accepted:
 
     * ``None`` or a missing attribute — no edge on either axis;
     * ``edge[axis] is None`` — that axis is fully filled;
     * ``edge[axis] = (u0, side)`` — ``u0`` float (``None``/NaN meaning "no edge"), ``side`` one
       of ``+1, -1, "lower", "upper"``; either may be a per-term array.  ``device.conventions``'
       ``FillEdge(u_edge, side)`` named tuple lands here, by unpacking or by attribute;
-    * ``edge[axis] = [entry, ...]`` — one entry per term, each ``None`` or ``(u0, side)``.
+    * ``edge[axis] = (lo, hi)`` — a two-sided window; ``device.aodl``'s ``FillWindow(lo, hi)``
+      lands here by field name, a plain pair by :func:`_window_pair`'s rule;
+    * ``edge[axis] = [entry, ...]`` — one entry per term, each ``None`` or one of the above.
     """
+    unbounded = (np.full(n, -np.inf), np.full(n, np.inf))
     if edge is None:
-        return np.full(n, np.nan), np.zeros(n, dtype=np.int8)
+        return unbounded
     try:
         item = edge[axis]
     except (TypeError, KeyError, IndexError) as exc:  # pragma: no cover - defensive
         raise TypeError(f"terms.edge must be indexable per axis, got {edge!r}") from exc
     if item is None:
-        return np.full(n, np.nan), np.zeros(n, dtype=np.int8)
+        return unbounded
 
-    pair = _edge_pair(item, n)
-    if pair is not None:
-        return pair
+    bounds = _entry_bounds(item, n)
+    if bounds is not None:
+        return bounds
 
     entries = list(item)
     if len(entries) != n:
         raise ValueError(f"per-term edge list for axis {axis} has {len(entries)} != {n} entries")
-    u0 = np.full(n, np.nan)
-    side = np.zeros(n, dtype=np.int8)
+    lo, hi = unbounded
     for i, entry in enumerate(entries):
         if entry is None:
             continue
-        single = _edge_pair(entry, 1)
+        single = _entry_bounds(entry, 1)
         if single is None:
             raise ValueError(f"unrecognized fill-edge entry {entry!r} for axis {axis}")
-        u0[i], side[i] = single[0][0], single[1][0]
-    return u0, side
+        lo[i], hi[i] = single[0][0], single[1][0]
+    return lo, hi
+
+
+def _axis_edges(edge: Any, axis: int, n: int) -> tuple[Float, NDArray[np.int8]]:
+    """Half-line view of :func:`_axis_bounds`: ``(u0, side)`` arrays of length ``n``.
+
+    ``side`` is ``+1`` when the aperture holds content at ``u >= u0`` (lower-edge moments),
+    ``-1`` for ``u <= u0`` (upper-edge moments) and ``0`` when the axis is fully filled
+    (``u0`` is then NaN) — the WO-03 contract, preserved bit for bit.
+
+    A **two-sided window cannot be expressed in this view**: it is reported as
+    ``side = _WINDOW`` with ``u0`` its *lower* bound.  A consumer that only knows half-lines
+    therefore integrates over ``u >= lo`` and over-counts the light a window passes; use
+    :func:`_axis_bounds` instead, as the field integrals here do.  (The one such consumer is
+    :func:`aodl.field.measure._pupil_power_axis`, whose per-term ``power`` is consequently an
+    over-estimate while a counter-propagating pair is mid-fill, ``tau/2 <= t < tau``.)
+    """
+    lo, hi = _axis_bounds(edge, axis, n)
+    bounded_lo = np.isfinite(lo)
+    bounded_hi = np.isfinite(hi)
+    side = np.select(
+        [bounded_lo & bounded_hi, bounded_lo, bounded_hi],
+        [np.int8(_WINDOW), np.int8(_LOWER), np.int8(_UPPER)],
+        default=np.int8(_NO_EDGE),
+    ).astype(np.int8)
+    u0 = np.where(bounded_lo, lo, np.where(bounded_hi, hi, np.nan))
+    return np.asarray(u0, dtype=np.float64), side
 
 
 def _axis_terms(terms: TermLike, axis: int) -> _AxisTerms:
@@ -289,8 +382,8 @@ def _axis_terms(terms: TermLike, axis: int) -> _AxisTerms:
         raise ValueError(f"theta1/theta2 must have shape (2, {n}), got {theta1.shape}")
     if alpha.shape != (N_AXES, 3, n):
         raise ValueError(f"alpha must have shape (2, 3, {n}), got {alpha.shape}")
-    u0, side = _axis_edges(getattr(terms, "edge", None), axis, n)
-    return _AxisTerms(theta1[axis], theta2[axis], alpha[axis], u0, side)
+    lo, hi = _axis_bounds(getattr(terms, "edge", None), axis, n)
+    return _AxisTerms(theta1[axis], theta2[axis], alpha[axis], lo, hi)
 
 
 def _axis_field(
@@ -316,14 +409,22 @@ def _axis_field(
     a = np.broadcast_to(a, b.shape)
     i0, i1, i2 = (np.array(m, dtype=np.complex128, copy=True) for m in gauss_moments(a, b))
 
-    lower = at.side == _LOWER
+    bounded_lo = np.isfinite(at.lo)
+    bounded_hi = np.isfinite(at.hi)
+    lower = bounded_lo & ~bounded_hi
     if np.any(lower):
-        e0, e1, e2 = gauss_moments_lower(a[lower], b[lower], at.u0[lower][:, None])
+        e0, e1, e2 = gauss_moments_lower(a[lower], b[lower], at.lo[lower][:, None])
         i0[lower], i1[lower], i2[lower] = e0, e1, e2
-    upper = at.side == _UPPER
+    upper = bounded_hi & ~bounded_lo
     if np.any(upper):
-        f0, f1, f2 = gauss_moments_upper(a[upper], b[upper], at.u0[upper][:, None])
+        f0, f1, f2 = gauss_moments_upper(a[upper], b[upper], at.hi[upper][:, None])
         i0[upper], i1[upper], i2[upper] = f0, f1, f2
+    window = bounded_lo & bounded_hi
+    if np.any(window):
+        w0, w1, w2 = gauss_moments_window(
+            a[window], b[window], at.lo[window][:, None], at.hi[window][:, None]
+        )
+        i0[window], i1[window], i2[window] = w0, w1, w2
 
     field = at.alpha[0][:, None] * i0 + at.alpha[1][:, None] * i1 + at.alpha[2][:, None] * i2
     return field.reshape((at.theta1.size, *shape))
@@ -524,7 +625,7 @@ def intensity_frame(
         # show as a square in a rendered frame).  Patch that axis only once it is fully filled.
         xs = (
             (0, grid.nx)
-            if np.any(atx.side[idx] != _NO_EDGE)
+            if np.any(atx.windowed[idx])
             else _index_span(
                 float(np.min(xc[idx] - margin[idx])),
                 float(np.max(xc[idx] + margin[idx])),
@@ -535,7 +636,7 @@ def intensity_frame(
         )
         ys = (
             (0, grid.ny)
-            if np.any(aty.side[idx] != _NO_EDGE)
+            if np.any(aty.windowed[idx])
             else _index_span(
                 float(np.min(yc[idx] - margin[idx])),
                 float(np.max(yc[idx] + margin[idx])),
