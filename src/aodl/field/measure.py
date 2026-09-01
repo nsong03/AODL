@@ -33,7 +33,6 @@ from .focal import (
     _axis_edges,
     _n_terms,
     group_terms,
-    spot_params,
 )
 from .gaussian import gauss_moments_lower
 
@@ -165,7 +164,7 @@ def _term_power(terms: TermLike, optics: OpticsParams) -> Float:
 def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> list[SpotMetrics]:
     """Analytic metrics, one :class:`SpotMetrics` per frequency group (Table I quantities).
 
-    Groups come from :func:`aodl.field.focal.group_terms` (default 10 kHz tolerance), so the
+    Groups come from :func:`aodl.field.focal.group_terms` (default 1 kHz tolerance), so the
     list matches the groups :func:`aodl.field.focal.intensity_frame` renders coherently.
     """
     n = _n_terms(terms)
@@ -179,6 +178,15 @@ def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> li
     weight = np.abs(np.asarray(terms.c, dtype=np.complex128).ravel()) ** 2
     power = _term_power(terms, optics)
 
+    # Per-term, per-axis best-focus lab Z, hoisted out of the group loop.  Each group needs
+    # its members' 1/e^2 radii *at its own* best-focus plane, and `focal.spot_params` derives
+    # that dependence in closed form: `w(Z) = waist0 sqrt(1 + ((Z - Z_focus)/z_R)^2)` about
+    # `Z_focus = Z_LAB_SIGN 2 F^2 theta2 / k`.  Evaluating it here costs one pass over the
+    # terms instead of one per group (`spot_params` re-derives *every* term's radius each
+    # time it is called, so the loop was O(groups x terms) for an O(terms) quantity).
+    z_focus = Z_LAB_SIGN * 2.0 * focal**2 * theta2 / k
+    waist0, rayleigh = optics.waist0, optics.rayleigh
+
     out: list[SpotMetrics] = []
     for idx in group_terms(terms, tol):
         w = weight[idx]
@@ -190,7 +198,8 @@ def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> li
         z_axis_lab = Z_LAB_SIGN * 2.0 * focal**2 * th2 / k
         z_lab = float(0.5 * (z_axis_lab[0] + z_axis_lab[1]))
         delta_f = float(z_axis_lab[0] - z_axis_lab[1])
-        _, _, wx, wy = spot_params(terms, optics, z_lab)
+        defocus = (z_lab - z_focus[:, idx]) / rayleigh
+        radii = waist0 * np.sqrt(1.0 + defocus**2)
 
         out.append(
             SpotMetrics(
@@ -198,9 +207,9 @@ def measure(terms: TermLike, optics: OpticsParams, tol: float = GROUP_TOL) -> li
                 y=float(th1[1] * focal / k),
                 z_lab=z_lab,
                 delta_f=delta_f,
-                sigma_astig=delta_f / optics.rayleigh,
-                wx=float(wx[idx] @ w),
-                wy=float(wy[idx] @ w),
+                sigma_astig=delta_f / rayleigh,
+                wx=float(radii[0] @ w),
+                wy=float(radii[1] @ w),
                 power=float(power[idx].sum()),
                 df_opt=float(df_opt[idx] @ w),
             )

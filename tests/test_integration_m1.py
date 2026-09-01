@@ -20,6 +20,8 @@ the line amplitude and ``alpha`` carries only its *shape*, so drive power must s
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 from scipy.special import erfcinv
@@ -45,6 +47,20 @@ def sweep(params1030):
         SWEEP_TIME + tau
     )
     return wfs, freq, tau
+
+
+def _linear_drive(params):
+    """``params`` with every channel at ``mixing_order=1`` — the strictly linear model.
+
+    The product default is ``mixing_order=3``: the crystal compresses, so a fundamental's
+    amplitude is ``(i/2) m (1 - m^2/8 - ...)`` rather than ``(i/2) m`` (Eqs. S20-S22).  The
+    envelope-bookkeeping test below asks whether ``A`` is counted once or twice, which is an
+    *exact* first-order statement, so it runs the linear model.
+    """
+    return replace(
+        params,
+        channels={name: replace(aod, mixing_order=1) for name, aod in params.channels.items()},
+    )
 
 
 def _static(params, detuning: float = 3.0 * MHz, span: float = 40.0):
@@ -267,11 +283,12 @@ def test_envelope_amplitude_is_not_counted_twice(params1030) -> None:
     would pick up ``A^2`` twice.  The ramp is deliberately slow (1 ms, ~90 transit times) so
     the amplitude-tilt term ``alpha1`` contributes < 1e-4 here and the comparison is clean.
     """
-    tau = params1030.channels["Ay"].transit_time
+    params = _linear_drive(params1030)  # exact A-scaling: order-1 mixing
+    tau = params.channels["Ay"].transit_time
     duration, ramp = 3.0 * ms, 1.0 * ms
     env = SmoothOnOff(t_on=0.0, t_off=duration, ramp=ramp)
     tone = ToneTrack(freq=PiecewisePoly.constant(2.0 * MHz, 0.0, duration), env=env)
-    wfs = WaveformSet({"Ay": ChannelWaveform((tone,))}, params1030)
+    wfs = WaveformSet({"Ay": ChannelWaveform((tone,))}, params)
 
     # sin^2 reaches 1/2 half way up the rise; remember the frame time is the drive time plus
     # the beam-centre retardation.
@@ -286,7 +303,7 @@ def test_envelope_amplitude_is_not_counted_twice(params1030) -> None:
 
     # Same statement through the rendered field: the frame integral is the group power
     # (Parseval, see field/measure.py), so it must scale the same way.
-    optics = params1030.optics
+    optics = params.optics
     grid = FrameGrid(
         x0=-8.0 * optics.waist0,
         x1=8.0 * optics.waist0,
@@ -302,7 +319,7 @@ def test_envelope_amplitude_is_not_counted_twice(params1030) -> None:
     # The envelope shape still reaches the pupil: alpha1 is the Eq. S5 amplitude tilt.
     terms = result.terms(0)
     expected_tilt = (
-        -(params1030.channels["Ay"].sound_speed ** -1)
+        -(params.channels["Ay"].sound_speed ** -1)
         * (-1)
         * float(env.dA(t_half))
         / float(env.A(t_half))
@@ -310,5 +327,5 @@ def test_envelope_amplitude_is_not_counted_twice(params1030) -> None:
     assert terms.alpha[1, 0, 0] == pytest.approx(1.0, rel=1e-12)  # normalized, by construction
     assert complex(terms.alpha[1, 1, 0]).real == pytest.approx(expected_tilt, rel=1e-12)
     assert abs(terms.c[0]) == pytest.approx(
-        0.5 * params1030.channels["Ay"].drive_strength * 0.5, rel=1e-12
+        0.5 * params.channels["Ay"].drive_strength * 0.5, rel=1e-12
     )

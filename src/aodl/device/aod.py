@@ -223,14 +223,18 @@ def aperture_window(
 ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
     """Diagnostic: the literal RF waveform sitting on the crystal at frame time ``t``.
 
-    Returns ``(u, V)`` on ``n`` points spanning the physical aperture
+    The drive of Eq. S1 sampled at Eq. S4's retarded time — i.e. the acoustic field itself,
+    *before* the Eqs. S5-S6 beam-center Taylor expansion that the rest of the device layer
+    works with.  Returns ``(u, V)`` on ``n`` points spanning the physical aperture
     ``u in [-D/2, +D/2]``, with
 
         V(u) = sum_n A_n(t_ret(u)) cos(2 pi f_center t_ret(u) + phase_n(t_ret(u)))
 
-    and ``V = 0`` wherever the aperture is not yet filled (``t_ret(u) < 0``).  This is the
-    *absolute* RF signal (carrier included, matching ``waveform/export.py``), meant for
-    plotting the startup transient — the field path never calls it.
+    and ``V = 0`` wherever the aperture is not yet filled (``t_ret(u) < 0``,
+    ``docs/conventions.md`` §7).  This is the *absolute* RF signal (carrier included, matching
+    ``waveform/export.py``), meant for plotting the startup transient — the field path never
+    calls it, and the physical ``|u| <= D/2`` crop shown here is deliberately *not* applied to
+    the field integrals (``docs/PLAN.md`` §1.5, decision 2).
     """
     half = 0.5 * aod.aperture
     u = np.linspace(-half, half, int(n))

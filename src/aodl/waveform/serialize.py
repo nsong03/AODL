@@ -25,6 +25,10 @@ from .tones import ChannelWaveform, ConstantEnvelope, Envelope, SmoothOnOff, Ton
 #: On-disk schema version written into the ``meta`` JSON.
 SCHEMA_VERSION = 1
 
+#: ``mixing_order`` assumed for a v1 file whose params block predates that key (the package
+#: default at the time such a file could have been written).  See :func:`params_from_dict`.
+LEGACY_MIXING_ORDER = 1
+
 #: ``<ch>_segments`` row layout: ``tone_idx, t0, T, degree, c0..c9``.
 SEGMENT_COLUMNS = 4 + MAX_DEGREE + 1
 
@@ -84,6 +88,7 @@ def params_to_dict(params: AODLParams) -> dict[str, Any]:
                 "f_center": aod.f_center,
                 "band": [aod.band[0], aod.band[1]],
                 "drive_strength": aod.drive_strength,
+                "mixing_order": aod.mixing_order,
             }
             for name, aod in params.channels.items()
         },
@@ -91,7 +96,13 @@ def params_to_dict(params: AODLParams) -> dict[str, Any]:
 
 
 def params_from_dict(data: dict[str, Any]) -> AODLParams:
-    """Inverse of :func:`params_to_dict` (exact: JSON floats round-trip)."""
+    """Inverse of :func:`params_to_dict` (exact: JSON floats round-trip).
+
+    ``mixing_order`` was added to the params block after the first files were written, so a
+    channel that lacks the key is read back as :data:`LEGACY_MIXING_ORDER` — the value that
+    was in force when such a file could have been produced.  The schema version is unchanged
+    (v1): the key is purely additive, and older readers simply ignore it.
+    """
     try:
         optics = OpticsParams(**data["optics"])
         channels = {
@@ -101,6 +112,7 @@ def params_from_dict(data: dict[str, Any]) -> AODLParams:
                 f_center=ch["f_center"],
                 band=(ch["band"][0], ch["band"][1]),
                 drive_strength=ch["drive_strength"],
+                mixing_order=int(ch.get("mixing_order", LEGACY_MIXING_ORDER)),
             )
             for name, ch in data["channels"].items()
         }
@@ -239,6 +251,7 @@ def load(path: str | Path) -> WaveformSet:
 __all__ = [
     "ENV_CONSTANT",
     "ENV_SMOOTH_ON_OFF",
+    "LEGACY_MIXING_ORDER",
     "SCHEMA_VERSION",
     "SEGMENT_COLUMNS",
     "TONE_COLUMNS",

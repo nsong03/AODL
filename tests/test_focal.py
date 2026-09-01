@@ -375,11 +375,12 @@ def test_patch_accumulation_matches_full_grid_evaluation(params1030, rng):
 
 
 def test_group_terms_clusters_by_optical_frequency(params1030):
-    """Grouping tolerance: 5 kHz apart is one tweezer, 1 MHz apart is two."""
+    """Grouping tolerance (default 1 kHz): 0.5 kHz apart is one tweezer, 1 MHz apart is two."""
     optics = params1030.optics
     theta = np.zeros((2, 3))
-    close = make_terms(c=np.ones(3), theta1=theta, theta2=theta, df_opt=[0.0, 5e3, 1.0 * MHz])
+    close = make_terms(c=np.ones(3), theta1=theta, theta2=theta, df_opt=[0.0, 5e2, 1.0 * MHz])
     groups = group_terms(close)
     assert [g.tolist() for g in groups] == [[0, 1], [2]]
     assert [g.tolist() for g in group_terms(close, tol=2.0 * MHz)] == [[0, 1, 2]]
+    assert [g.tolist() for g in group_terms(close, tol=1e2)] == [[0], [1], [2]]
     assert len(spot_params(close, optics, 0.0)[0]) == 3

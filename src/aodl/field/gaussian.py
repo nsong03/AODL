@@ -18,6 +18,12 @@ The edge families model a partially filled aperture (the acoustic wavefront stil
 entering the crystal), and are computed through the scaled complementary error function
 ``erfcx`` so that they stay finite where the naive ``exp(b^2/4a) * erfc(w)`` product
 overflows or underflows to garbage.
+
+The edge itself is not an optical aperture: it is the acoustic fill boundary
+``s u <= v t - D/2`` of Eq. S4's retarded time (``docs/conventions.md`` §7), which windows
+the Eq. S11 pupil integral to the half-line the sound has reached.  The input beam is
+modelled as an uncropped Gaussian (``docs/PLAN.md`` §1.5, decision 2), so this is the only
+window the field integrals ever see.
 """
 
 from __future__ import annotations
@@ -74,6 +80,9 @@ def gauss_moments_lower(
 ) -> tuple[Complex, Complex, Complex]:
     r"""Lower-edge moments ``E_n(a, b, u0) = \int_{u0}^{+inf} u^n e^{-a u^2 + b u} du``.
 
+    The Eq. S11 axis integral over an aperture filled only for ``u >= u0`` — the
+    ``sound_sign = -1`` fill window of Eq. S4 / ``docs/conventions.md`` §7.
+
     Completing the square with ``w = sqrt(a) u0 - b/(2 sqrt(a))`` (principal square root)
     and ``g0 = exp(-a u0^2 + b u0)`` (the integrand at the edge, bounded in all physical
     cases) gives, using the identity ``b^2/4a - w^2 = -a u0^2 + b u0``,
@@ -111,6 +120,9 @@ def gauss_moments_upper(
     a: ArrayLike, b: ArrayLike, u1: ArrayLike
 ) -> tuple[Complex, Complex, Complex]:
     r"""Upper-edge moments ``F_n(a, b, u1) = \int_{-inf}^{u1} u^n e^{-a u^2 + b u} du``.
+
+    The same Eq. S11 axis integral for the ``sound_sign = +1`` fill window (content at
+    ``u <= u1``, ``docs/conventions.md`` §7).
 
     By the reflection ``u -> -u``: ``F_n(a, b, u1) = (-1)^n E_n(a, -b, -u1)``.
     """

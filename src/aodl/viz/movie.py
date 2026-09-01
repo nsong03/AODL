@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple, cast
 
 import matplotlib as mpl
 import numpy as np
@@ -131,6 +131,22 @@ def _xy_layers(
     return list(zip(frames, colors, strict=True))
 
 
+class _XZPanel(NamedTuple):
+    """The XZ side panel's sampling grids, row colours and live artists.
+
+    Bundled because they exist together or not at all (``xz_panel=False`` drops the lot), so
+    one ``panel is not None`` test says the panel is being drawn — and tells a type checker
+    that all six are present.
+    """
+
+    x: Float
+    z: Float
+    row_colors: Float
+    image: Any
+    track: Any
+    label: Any
+
+
 def _blank(grid: FrameGrid) -> Float:
     return np.zeros((grid.ny, grid.nx), dtype=np.float64)
 
@@ -169,8 +185,12 @@ def _peaks(
 
 def _figure(
     grid: FrameGrid, dpi: int, want_xz: bool, want_strip: bool
-) -> tuple[Figure, dict[str, Any]]:
-    """Build the dark figure and its axes; sizes follow the data's aspect ratio."""
+) -> tuple[Figure, FigureCanvasAgg, dict[str, Any]]:
+    """Build the dark figure, its Agg canvas and its axes; sizes follow the data aspect ratio.
+
+    The canvas is returned rather than reached for through ``fig.canvas`` because only the
+    Agg backend exposes ``buffer_rgba()``, which is how frames reach the movie writer.
+    """
     span_x, span_y = grid.x1 - grid.x0, grid.y1 - grid.y0
     if span_y >= span_x:
         main_h = AXES_LONG_SIDE
@@ -193,7 +213,7 @@ def _figure(
     fig_h = 2.0 * round(fig_h * dpi / 2.0) / dpi
 
     fig = Figure(figsize=(fig_w, fig_h), dpi=dpi)
-    FigureCanvasAgg(fig)
+    canvas = FigureCanvasAgg(fig)
 
     def rect(x: float, y: float, w: float, h: float) -> tuple[float, float, float, float]:
         return (x / fig_w, y / fig_h, w / fig_w, h / fig_h)
@@ -205,7 +225,7 @@ def _figure(
     axes["cbar"] = fig.add_axes(rect(left + main_w + side + cbar_gap, main_y, cbar_w, main_h))
     if want_strip:
         axes["strip"] = fig.add_axes(rect(left, bottom, main_w + side, strip_h))
-    return fig, axes
+    return fig, canvas, axes
 
 
 def _drive_strip(ax: Any, result: SimResult) -> None:
@@ -226,7 +246,9 @@ def _drive_strip(ax: Any, result: SimResult) -> None:
             points = np.column_stack([t / us, f])
             segments = np.stack([points[:-1], points[1:]], axis=1)
             alpha = 0.25 + 0.75 * 0.5 * (env[:-1] + env[1:])
-            ax.add_collection(LineCollection(segments, colors=color, linewidths=1.6, alpha=alpha))
+            ax.add_collection(
+                LineCollection(list(segments), colors=color, linewidths=1.6, alpha=alpha)
+            )
         ax.plot([], [], color=color, lw=1.6, label=name)
     ax.set_xlim(t[0] / us, t[-1] / us)
     ax.set_ylabel("drive [MHz]")
@@ -240,17 +262,19 @@ def _open_writer(path: Path, fps: int) -> tuple[Any, Path]:
     import imageio.v2 as imageio
 
     if path.suffix.lower() != ".gif":
+        # imageio resolves `format` by name at run time; its annotation asks for a Format
+        # object, so the options go through an untyped mapping rather than a `type: ignore`.
+        ffmpeg: dict[str, Any] = {
+            "format": "FFMPEG",
+            "mode": "I",
+            "fps": fps,
+            "codec": "libx264",
+            "quality": 8,
+            "macro_block_size": 1,
+            "pixelformat": "yuv420p",
+        }
         try:
-            writer = imageio.get_writer(
-                path,
-                format="FFMPEG",
-                mode="I",
-                fps=fps,
-                codec="libx264",
-                quality=8,
-                macro_block_size=1,
-                pixelformat="yuv420p",
-            )
+            writer = imageio.get_writer(path, **ffmpeg)
             return writer, path
         except Exception as exc:  # pragma: no cover - depends on the ffmpeg install
             path = path.with_suffix(".gif")
@@ -337,8 +361,10 @@ def render_movie(
 
     xy_peak, xz_peak = _peaks(result, grid, planes, z_max, x_panel, z_panel, rows)
 
-    with mpl.rc_context(DARK_STYLE):
-        fig, axes = _figure(grid, dpi, xz_panel, spectrogram_panel)
+    # DARK_STYLE is a plain {str: Any} rcParams patch; matplotlib types the argument with the
+    # Literal set of every rcParam name, which no ordinary dict literal can satisfy.
+    with mpl.rc_context(cast(Any, DARK_STYLE)):
+        fig, canvas, axes = _figure(grid, dpi, xz_panel, spectrogram_panel)
         ax = axes["main"]
         extent = (grid.x0 / um, grid.x1 / um, grid.y0 / um, grid.y1 / um)
         im = ax.imshow(np.zeros((grid.ny, grid.nx, 3)), extent=extent, aspect="equal")
@@ -368,10 +394,8 @@ def render_movie(
             color="#f2f5f8",
         )
 
-        im_xz = None
-        track_line = None
-        row_text = None
-        if xz_panel:
+        panel: _XZPanel | None = None
+        if x_panel is not None and z_panel is not None and row_colors is not None:
             ax_xz = axes["xz"]
             im_xz = ax_xz.imshow(
                 np.zeros((XZ_NZ, XZ_NX, 3)),
@@ -399,6 +423,7 @@ def render_movie(
             ax_xz.set_xlabel("X [µm]")
             ax_xz.set_ylabel("Z lab [µm]")
             ax_xz.set_title("XZ slice (X, Z to different scales)", fontsize=9)
+            panel = _XZPanel(x_panel, z_panel, row_colors, im_xz, track_line, row_text)
 
         bar = fig.colorbar(
             mpl.cm.ScalarMappable(
@@ -427,15 +452,15 @@ def render_movie(
                 im.set_data(rgb)
                 clock.set_text(f"t = {result.times[i] / us:.2f} µs")
                 depth.set_text(f"plane Z = {plane / um:+.2f} µm")
-                if im_xz is not None:
-                    panel = result.slice_xz(i, x_panel, z_panel, float(rows[i]))
-                    im_xz.set_data(tint_by_row(panel, row_colors, xz_peak, gamma))
-                    track_line.set_ydata([plane / um, plane / um])
-                    row_text.set_text(f"y = {rows[i] / um:+.1f} µm")
+                if panel is not None:
+                    xz = result.slice_xz(i, panel.x, panel.z, float(rows[i]))
+                    panel.image.set_data(tint_by_row(xz, panel.row_colors, xz_peak, gamma))
+                    panel.track.set_ydata([plane / um, plane / um])
+                    panel.label.set_text(f"y = {rows[i] / um:+.1f} µm")
                 if cursor is not None:
                     cursor.set_xdata([result.times[i] / us, result.times[i] / us])
-                fig.canvas.draw()
-                writer.append_data(np.asarray(fig.canvas.buffer_rgba())[..., :3])
+                canvas.draw()
+                writer.append_data(np.asarray(canvas.buffer_rgba())[..., :3])
         finally:
             writer.close()
     return out

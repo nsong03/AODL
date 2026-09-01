@@ -16,6 +16,7 @@ from the drive phase, because its ``s 2 pi f_center u / v`` tilt is a common def
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -59,6 +60,20 @@ def _channel(*tracks):
 
 def _wfs(params, **channels):
     return tones.WaveformSet(channels=dict(channels), params=params)
+
+
+def _linear_drive(params):
+    """``params`` with every channel at ``mixing_order=1`` — the strictly linear model.
+
+    The product default is ``mixing_order=3`` (compression + IM3, Eqs. S20-S22), which is
+    the right default for a real crystal but shifts every fundamental by ``~C^2/8`` and adds
+    product lines.  The tests that pin an *exact* first-order Eq. S3 amplitude, or count one
+    line per tone, are statements about the linear weak-drive model, so they say so here.
+    """
+    return replace(
+        params,
+        channels={name: replace(aod, mixing_order=1) for name, aod in params.channels.items()},
+    )
 
 
 # ------------------------------------------------------------------- analytic evaluation
@@ -172,14 +187,15 @@ def _deviation(analytic, reference):
 
 def test_static_tone_deflects_per_table_i(params1030) -> None:
     """f = +3 MHz on Ay: one term, ``theta1y = -2 pi f / v``, spot at ``-lambda F f / v``."""
-    optics = params1030.optics
-    aod = params1030.channels["Ay"]
+    params = _linear_drive(params1030)  # pins the exact Eq. S3 amplitude: order-1 mixing
+    optics = params.optics
+    aod = params.channels["Ay"]
     geom = geometry("Ay")
     tau, v = aod.transit_time, aod.sound_speed
     detuning, t = 3.0 * MHz, 2.0 * tau
 
     cw = _channel(_static(detuning, 6.0 * tau, phase0=0.4))
-    terms = build_terms(_wfs(params1030, Ay=cw), t, channels=("Ay",))
+    terms = build_terms(_wfs(params, Ay=cw), t, channels=("Ay",))
 
     assert terms.n_terms == 1
     assert terms.theta1[1, 0] == pytest.approx(-2.0 * math.pi * detuning / v, rel=1e-13)
@@ -196,7 +212,7 @@ def test_static_tone_deflects_per_table_i(params1030) -> None:
     assert lines.amp[0] == pytest.approx(complex(expected_amp), rel=1e-13)
     assert terms.c[0] == pytest.approx(lines.amp[0], rel=1e-13)
 
-    y_expect = -params1030.deflection_scale * detuning
+    y_expect = -params.deflection_scale * detuning
     y_axis = y_expect + np.linspace(-4.0, 4.0, 401) * optics.waist0
     analytic = _term_field(terms, optics, 0.0, y_axis, 0.0)
     assert abs(_peak_position(y_axis, np.abs(analytic) ** 2) - y_expect) < 0.01 * optics.waist0
@@ -451,15 +467,16 @@ def test_two_channel_product_is_pure_algebra(params1030) -> None:
 
 def test_cartesian_product_over_tones(params1030) -> None:
     """Two tones on Ax times three on Bx = six beams (Eq. S7, the Fig. S6 picture)."""
-    tau = params1030.channels["Ax"].transit_time
-    v = params1030.sound_speed
+    params = _linear_drive(params1030)  # one line per tone: order-1 mixing
+    tau = params.channels["Ax"].transit_time
+    v = params.sound_speed
     t = 2.0 * tau
     fa = (1.0 * MHz, 2.0 * MHz)
     fb = (-0.5 * MHz, 3.0 * MHz, 4.0 * MHz)
 
     cw_a = _channel(*[_static(f, 6.0 * tau) for f in fa])
     cw_b = _channel(*[_static(f, 6.0 * tau) for f in fb])
-    terms = build_terms(_wfs(params1030, Ax=cw_a, Bx=cw_b), t)
+    terms = build_terms(_wfs(params, Ax=cw_a, Bx=cw_b), t)
 
     assert terms.n_terms == len(fa) * len(fb)
     np.testing.assert_allclose(terms.df_opt, [a + b for a in fa for b in fb], rtol=1e-13)
@@ -493,7 +510,8 @@ def test_undriven_channels_are_identity_factors(params1030) -> None:
 
 def test_amplitude_polynomial_from_a_ramping_envelope(params1030) -> None:
     """Eq. S5: alpha carries the envelope *shape*; its value lives in the line amplitude."""
-    aod = params1030.channels["Ay"]
+    params = _linear_drive(params1030)  # |c| = (C/2) A exactly: order-1 mixing
+    aod = params.channels["Ay"]
     geom = geometry("Ay")
     tau, v = aod.transit_time, aod.sound_speed
     env = tones.SmoothOnOff(t_on=0.5 * tau, t_off=5.0 * tau, ramp=1.5 * tau)
@@ -501,7 +519,7 @@ def test_amplitude_polynomial_from_a_ramping_envelope(params1030) -> None:
     t = 1.4 * tau  # t_c = 0.9 tau, midway up the rise
     t_c = t - 0.5 * tau
 
-    terms = build_terms(_wfs(params1030, Ay=cw), t, channels=("Ay",))
+    terms = build_terms(_wfs(params, Ay=cw), t, channels=("Ay",))
     amp, d_amp, d2_amp = float(env.A(t_c)), float(env.dA(t_c)), float(env.d2A(t_c))
     assert 0.0 < amp < 1.0
     assert d_amp > 0.0

@@ -39,7 +39,7 @@ Hz, versus time in seconds. The carrier is re-added only by `render_samples`.
     "optics": {"wavelength": 1.03e-06, "focal_length": 0.006500000000000001, "w_in": 0.002},
     "channels": {
       "Ax": {"sound_speed": 650.0, "aperture": 0.0075, "f_center": 100000000.0,
-             "band": [90000000.0, 110000000.0], "drive_strength": 0.3},
+             "band": [90000000.0, 110000000.0], "drive_strength": 0.3, "mixing_order": 3},
       "Bx": {"…": "…"}, "Ay": {"…": "…"}, "By": {"…": "…"}
     }
   },
@@ -53,6 +53,10 @@ Hz, versus time in seconds. The carrier is re-added only by `render_samples`.
 - `channels` lists the driven channels, in the order their arrays should be read.
 - A `schema_version` this build does not know raises `ValueError` on load rather than
   guessing.
+- Keys may be *added* to a channel's params block without bumping `schema_version`; a
+  reader supplies its documented default for a key an older file lacks. So far that is
+  `mixing_order` (added with M2, default **1** when absent — the package default at the
+  time files without it could be written).
 
 ## 3. `<ch>_segments` — piecewise-polynomial frequency laws
 

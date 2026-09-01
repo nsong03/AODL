@@ -28,8 +28,9 @@ is.  :func:`aodl.field.measure.measure` reports powers on this same scale, so
 ``sum(power) ~ integral of intensity_frame``.
 
 **Interference.**  Each term carries an optical frequency offset ``df_opt``.  Atoms and cameras
-average over MHz beat notes, so terms are grouped by ``df_opt`` (default tolerance 10 kHz):
-degenerate terms are summed *coherently* and the groups add in *intensity*,
+average over MHz beat notes, so terms are grouped by ``df_opt`` (default tolerance 1 kHz, and no
+group wider than that — see :func:`group_terms`): degenerate terms are summed *coherently* and
+the groups add in *intensity*,
 ``I = sum_g |sum_{k in g} U_k|^2`` (``docs/PLAN.md`` §1.3, the Supplement's interlaced-fading
 logic).  Each group is evaluated only on a bounding patch around its spots.
 
@@ -56,7 +57,9 @@ Float = NDArray[np.float64]
 Index = NDArray[np.intp]
 
 #: Default optical-frequency tolerance for interference grouping (``docs/ARCHITECTURE.md`` §3).
-GROUP_TOL: float = 10.0 * kHz
+#: See :func:`group_terms` for why 1 kHz — and why the tolerance is also a hard cap on a
+#: group's *width*, not only on the gap between neighbours.
+GROUP_TOL: float = 1.0 * kHz
 
 #: Smallest patch side, in pixels, that :func:`intensity_frame` will evaluate.
 MIN_PATCH_PX: int = 3
@@ -79,28 +82,37 @@ class TermLike(Protocol):
     are consumed *structurally*: any object carrying these attributes works, which is also what
     keeps the tests independent of the device layer.
 
-    Attributes
-    ----------
-    c:
-        ``(N,)`` complex amplitude of each pupil term.
-    theta1:
-        ``(2, N)`` linear pupil phase [rad/m] per axis (0 = x, 1 = y) — deflection.
-    theta2:
-        ``(2, N)`` quadratic pupil phase [rad/m^2] per axis — chirp lens.
-    alpha:
-        ``(2, 3, N)`` amplitude-polynomial coefficients ``(alpha0, alpha1, alpha2)`` per axis.
-    df_opt:
-        ``(N,)`` optical frequency offset [Hz]; the interference-grouping tag.
-    edge:
-        Optional per-axis aperture fill edge, ``(edge_x, edge_y)``; see :func:`_axis_edges`.
+    The members are declared **read-only** (properties, not settable variables) because that
+    is what this module actually requires: nothing here ever writes a term array, and a
+    mutable protocol member would exclude every immutable implementation — including
+    ``device.aodl.TermArray``, a frozen dataclass, whose fields are read-only to a type
+    checker.  A plain (settable) attribute satisfies a read-only property, so the frozen
+    dataclass, an ordinary mutable object and a namespace-style stub all conform.
     """
 
-    c: NDArray[Any]
-    theta1: NDArray[Any]
-    theta2: NDArray[Any]
-    alpha: NDArray[Any]
-    df_opt: NDArray[Any]
-    edge: Any
+    @property
+    def c(self) -> NDArray[Any]:
+        """``(N,)`` complex amplitude of each pupil term."""
+
+    @property
+    def theta1(self) -> NDArray[Any]:
+        """``(2, N)`` linear pupil phase [rad/m] per axis (0 = x, 1 = y) — deflection."""
+
+    @property
+    def theta2(self) -> NDArray[Any]:
+        """``(2, N)`` quadratic pupil phase [rad/m^2] per axis — chirp lens."""
+
+    @property
+    def alpha(self) -> NDArray[Any]:
+        """``(2, 3, N)`` amplitude-polynomial coefficients ``(a0, a1, a2)`` per axis."""
+
+    @property
+    def df_opt(self) -> NDArray[Any]:
+        """``(N,)`` optical frequency offset [Hz]; the interference-grouping tag."""
+
+    @property
+    def edge(self) -> Any:
+        """Optional per-axis aperture fill edge, ``(edge_x, edge_y)``; see :func:`_axis_edges`."""
 
 
 @dataclass(frozen=True)
@@ -348,12 +360,54 @@ def term_field(
     return (c[:, None] * fx * fy).reshape((n, *xb.shape))
 
 
+def _cap_diameter(chunk: Index, df: Float, tol: float) -> list[Index]:
+    """Split one neighbour-chained cluster until every piece spans at most ``tol``.
+
+    ``chunk`` is in ascending ``df`` order.  An oversized piece is cut at its largest
+    internal gap and both halves are re-examined; ``np.argmax`` takes the first maximum, so
+    a tie is broken at the lowest frequency and the result is fully deterministic.  Iterative
+    rather than recursive: a long chain of ``tol/2`` steps would otherwise nest one level per
+    term.
+    """
+    out: list[Index] = []
+    stack = [chunk]
+    while stack:
+        piece = stack.pop()
+        values = df[piece]
+        if piece.size < 2 or values[-1] - values[0] <= tol:
+            out.append(piece)
+            continue
+        cut = int(np.argmax(np.diff(values))) + 1
+        stack.append(piece[cut:])  # right first, so the left half pops (and lands) first
+        stack.append(piece[:cut])
+    return out
+
+
 def group_terms(terms: TermLike, tol: float = GROUP_TOL) -> list[Index]:
     """Cluster terms by optical frequency ``df_opt`` (``docs/PLAN.md`` §1.3).
 
-    Terms whose ``df_opt`` are within ``tol`` of a chain neighbour land in the same group and
-    interfere coherently; separate groups add in intensity because their beat note averages
-    away over any atomic or camera integration time.
+    Terms in one group are summed *coherently*; separate groups add in intensity, because
+    their beat note averages away over any atomic or camera integration time.  Two rules
+    decide the split, and a group must satisfy both:
+
+    1. **neighbour chaining** — consecutive ``df_opt`` more than ``tol`` apart start a new
+       group;
+    2. **diameter cap** — no group may span more than ``tol`` end to end.  Any chained
+       cluster that is wider is cut at its largest internal gap, largest gap first, until
+       every piece fits (:func:`_cap_diameter`).
+
+    Rule 2 exists because single-linkage chaining alone is transitive and a tone *ladder* is
+    exactly the pathological input: 40 array terms spaced 9 kHz would chain into one
+    40-member "group" under a 10 kHz tolerance, i.e. one 360 kHz-wide blob of terms declared
+    mutually coherent, when in reality every pair beats at ≥ 9 kHz.
+
+    The default ``tol`` = :data:`GROUP_TOL` = 1 kHz sits in an empty gap of the physics
+    (``docs/PLAN.md`` §1.2-1.3): the coherent cases are *exact* degeneracies — an IM3 product
+    landing on a fundamental (Eqs. S20-S22), or the shadow-tweezer pairs of Fig. S6 — which
+    agree to a few ULP, i.e. 0 Hz; the incoherent cases are separated by tone spacings, which
+    are ≥ 100 kHz for any array a 10 MHz band can hold.  Nothing legitimate lives in between,
+    so the tolerance only has to be small enough not to glue a ladder and large enough to
+    absorb round-off.
 
     Returns a list of index arrays (ascending within each group, groups ordered by frequency).
     """
@@ -362,7 +416,8 @@ def group_terms(terms: TermLike, tol: float = GROUP_TOL) -> list[Index]:
         return []
     order = np.argsort(df, kind="stable")
     splits = np.flatnonzero(np.diff(df[order]) > tol) + 1
-    return [np.sort(chunk) for chunk in np.split(order, splits)]
+    clusters = np.split(order, splits)
+    return [np.sort(chunk) for cluster in clusters for chunk in _cap_diameter(cluster, df, tol)]
 
 
 def spot_params(
@@ -508,8 +563,15 @@ def intensity_slice_xz(
 ) -> Float:
     """Intensity on an ``(X, Z_lab)`` slice at fixed ``Y = y0`` — the movie's XZ panel.
 
-    Same frequency grouping as :func:`intensity_frame`.  Returns shape ``(nz, nx)`` (row index
-    selects ``z_axis_lab``, column index selects ``x_axis``).
+    Eq. S11 again, now scanned in its defocus variable instead of at one plane: the axial
+    coordinate enters only through ``a``'s ``- k Z_S11 / (2 F^2)`` term (module docstring), so
+    a Z scan costs no more than an X scan and needs no propagation step.  Lab Z is converted
+    on the way in (``Z_S11 = Z_LAB_SIGN * z_lab``), which is why the panel's vertical axis
+    reads as the paper's Table I ``Zbar``.  This is the side panel of ``docs/ARCHITECTURE.md``
+    §3 decision 3.
+
+    Same frequency grouping as :func:`intensity_frame` (``docs/PLAN.md`` §1.3).  Returns shape
+    ``(nz, nx)`` (row index selects ``z_axis_lab``, column index selects ``x_axis``).
 
     No patching here: a spot sweeps through focus along the Z axis of this panel, so a
     Z-independent bounding box would be wrong, and panel grids are small.

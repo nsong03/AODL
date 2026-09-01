@@ -44,10 +44,12 @@ class AODParams:
         ``O((C·A)^2)`` relative — so ``3`` is what you want whenever ghosts or per-trap
         intensity errors matter, and ``1`` is the cheap, strictly first-order model.
 
-        The default is ``1``: it is the model the M1 acceptance suite pins (turning mixing
-        on shifts every fundamental by ``~C^2/8``, i.e. 1% at the default drive), so IM3 is
-        opt-in per channel — ``replace(aod, mixing_order=3)`` — or per call, through
-        ``channel_lines(..., mixing=MixingConfig(...))``.
+        The default is ``3``, the physical drive: a real crystal compresses (every
+        fundamental loses ``~C^2/8``, i.e. 1% at the default drive) and does produce IM3
+        ghosts, so the product default must show them.  Drop to ``1`` —
+        ``replace(aod, mixing_order=1)``, or per call through
+        ``channel_lines(..., mixing=MixingConfig(order=1))`` — when you want the strictly
+        linear weak-drive model, e.g. to compare against a hand-computed Eq. S3 amplitude.
     """
 
     sound_speed: float
@@ -55,7 +57,7 @@ class AODParams:
     f_center: float
     band: tuple[float, float]
     drive_strength: float = 0.30
-    mixing_order: int = 1
+    mixing_order: int = 3
 
     def __post_init__(self) -> None:
         if self.sound_speed <= 0.0:

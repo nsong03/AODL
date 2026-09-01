@@ -38,3 +38,14 @@ select = ["E", "F", "W", "I", "NPY"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/aodl"]
+
+# Third-party scientific packages ship partial or no type information; the gate is on our
+# own code, not on their stubs.  Scoped per package rather than set globally, so a typo in
+# an `aodl.` import is still an error.
+[[tool.mypy.overrides]]
+module = ["scipy.*", "imageio.*", "matplotlib.*"]
+ignore_missing_imports = true

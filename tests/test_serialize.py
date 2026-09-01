@@ -8,6 +8,7 @@ is float-identical, and nothing in the file is remotely sample-sized.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -106,6 +107,59 @@ def test_params_snapshot_round_trips(tmp_path):
         for name, aod in preset.channels.items():
             assert loaded.params.channels[name].band == aod.band
             assert loaded.params.channels[name].drive_strength == aod.drive_strength
+            assert loaded.params.channels[name].mixing_order == aod.mixing_order
+
+
+def _single_tone_set(params) -> WaveformSet:
+    """Minimal one-tone waveform carrying ``params``."""
+    return WaveformSet(
+        {"Ay": ChannelWaveform((ToneTrack(ramps.linear(0.0, T_END, 0.0, 1.0 * MHz)),))},
+        params=params,
+    )
+
+
+@pytest.mark.parametrize("order", [1, 3])
+def test_mixing_order_round_trips_per_channel(tmp_path, order):
+    """``AODParams.mixing_order`` is part of the snapshot, per channel (WO-08 §0b)."""
+    preset = default_1030()
+    mixed = replace(
+        preset,
+        channels={
+            name: replace(aod, mixing_order=order if name in ("Ax", "Ay") else 1)
+            for name, aod in preset.channels.items()
+        },
+    )
+    path = serialize.save(_single_tone_set(mixed), tmp_path / "mix.npz")
+    with np.load(path, allow_pickle=False) as data:
+        meta = json.loads(str(data["meta"].item()))
+    assert meta["params"]["channels"]["Ax"]["mixing_order"] == order
+    assert meta["params"]["channels"]["Bx"]["mixing_order"] == 1
+    assert meta["schema_version"] == serialize.SCHEMA_VERSION == 1  # additive key, same schema
+
+    loaded = serialize.load(path)
+    assert loaded.params == mixed
+    assert loaded.params.channels["Ay"].mixing_order == order
+    assert loaded.params.channels["By"].mixing_order == 1
+
+
+def test_params_without_mixing_order_load_as_legacy_order_one(tmp_path):
+    """A pre-M2 v1 file has no ``mixing_order`` key; it must still load, at order 1."""
+    path = tmp_path / "legacy.npz"
+    serialize.save(_single_tone_set(default_1030()), path)
+    with np.load(path, allow_pickle=False) as data:
+        arrays = {key: data[key] for key in data.files if key != "meta"}
+        meta = json.loads(str(data["meta"].item()))
+    for channel in meta["params"]["channels"].values():
+        del channel["mixing_order"]
+    np.savez(path, meta=json.dumps(meta), **arrays)
+
+    loaded = serialize.load(path)
+    assert serialize.LEGACY_MIXING_ORDER == 1
+    assert all(aod.mixing_order == 1 for aod in loaded.params.channels.values())
+    # everything else in the snapshot is untouched by the missing key
+    preset = default_1030()
+    assert loaded.params.optics == preset.optics
+    assert loaded.params.channels["Ay"].drive_strength == preset.channels["Ay"].drive_strength
 
 
 def test_file_contains_parameters_not_samples(tmp_path):

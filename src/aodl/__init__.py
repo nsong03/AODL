@@ -8,7 +8,7 @@ order (``docs/ARCHITECTURE.md`` §1)::
 
     import numpy as np
     from aodl import ChannelWaveform, ToneTrack, WaveformSet, default_1030, ramps
-    from aodl import render_movie, simulate
+    from aodl import array_tones, render_movie, simulate
     from aodl.units import MHz, us
 
     p = default_1030()
@@ -16,6 +16,10 @@ order (``docs/ARCHITECTURE.md`` §1)::
     wfs = WaveformSet({"Ay": ChannelWaveform((tone,))}, p).with_hold_until(100 * us)
     result = simulate(wfs, np.linspace(0.0, 100 * us, 120))
     render_movie(result, "sweep.mp4")
+
+    # ... or a 5x5 array: a Schroeder-phased tone ladder per crossed channel (M2)
+    ladder = array_tones(5, 1 * MHz, t1=50 * us)
+    array = WaveformSet({"Ax": ladder, "Ay": ladder}, p)
 
 Everything else stays one import away (``from aodl.device.aodl import build_terms``,
 ``from aodl.field import focal``, ...); SI units are used throughout, with the ``aodl.units``
@@ -38,6 +42,7 @@ from .params import (
 from .poly import PiecewisePoly
 from .trajectory import ramps
 from .viz.movie import auto_grid, render_movie
+from .waveform.synthesis import add_common_ramp, array_tones, schroeder_phases
 from .waveform.tones import (
     ChannelWaveform,
     ConstantEnvelope,
@@ -66,6 +71,8 @@ __all__ = [
     "ToneTrack",
     "WaveformSet",
     "__version__",
+    "add_common_ramp",
+    "array_tones",
     "auto_grid",
     "build_terms",
     "default_1030",
@@ -76,6 +83,7 @@ __all__ = [
     "params",
     "ramps",
     "render_movie",
+    "schroeder_phases",
     "simulate",
     "track_z",
     "units",

@@ -159,7 +159,7 @@ def geometry(channel: str) -> ChannelGeometry:
 
 
 def filled_side(geom: ChannelGeometry) -> Side:
-    """Which side of the fill edge carries drive content.
+    """Which side of the fill edge carries drive content (Eq. S4 timing, §7 of the docs).
 
     The filled region is ``s u <= v t - D/2`` (module docstring), i.e. ``u <= u_edge`` for
     ``s = +1`` (an *upper* edge) and ``u >= u_edge`` for ``s = -1`` (a *lower* edge).
@@ -168,10 +168,14 @@ def filled_side(geom: ChannelGeometry) -> Side:
 
 
 def beam_center_time(t: float, aod: AODParams) -> float:
-    """Retarded drive time seen at the beam center: ``t_c = t - tau / 2``.
+    """Retarded drive time seen at the beam center: ``t_c = t - tau / 2``.  Eq. S4.
 
-    The transducer sits half an aperture away from the beam center, so the drive sample
-    illuminating ``u = 0`` at frame time ``t`` was emitted ``tau / 2 = D / (2 v)`` earlier.
+    Eq. S4 writes the acoustic field at aperture coordinate ``u`` as the drive delayed by its
+    travel time from the transducer; ``docs/conventions.md`` §7 solves that for the beam
+    center.  The transducer sits half an aperture away from ``u = 0``, so the drive sample
+    illuminating the beam center at frame time ``t`` was emitted ``tau / 2 = D / (2 v)``
+    earlier.  This is the time at which the Eqs. S5-S6 Taylor expansion — and hence every
+    frequency, chirp rate, phase and envelope the device layer reads — is evaluated.
     """
     return float(t) - 0.5 * aod.transit_time
 
@@ -179,17 +183,23 @@ def beam_center_time(t: float, aod: AODParams) -> float:
 def retarded_time(
     t: float, u: ArrayLike, geom: ChannelGeometry, aod: AODParams
 ) -> NDArray[np.float64]:
-    """Drive time whose sample sits at aperture coordinate ``u`` at frame time ``t``.
+    """Drive time whose sample sits at aperture coordinate ``u`` at frame time ``t``.  Eq. S4.
 
-    ``t_ret(u) = t - (s u + D/2) / v = t_c - s u / v``.  Negative values mean the aperture
-    is not yet filled at that ``u`` (the drive starts at ``t = 0``).
+    ``t_ret(u) = t - (s u + D/2) / v = t_c - s u / v`` — the argument of ``V`` in Eq. S4, i.e.
+    the retardation that the beam-center expansion of Eqs. S5-S6 Taylor-expands.  Negative
+    values mean the aperture is not yet filled at that ``u`` (the drive starts at ``t = 0``).
     """
     u_arr = np.asarray(u, dtype=np.float64)
     return beam_center_time(t, aod) - geom.sound_sign * u_arr / aod.sound_speed
 
 
 def is_filled(u: ArrayLike, t: float, geom: ChannelGeometry, aod: AODParams) -> NDArray[np.bool_]:
-    """Mask of aperture positions already carrying drive content: ``s u <= v t - D/2``."""
+    """Mask of aperture positions already carrying drive content: ``s u <= v t - D/2``.
+
+    Equivalently ``retarded_time(t, u, ...) >= 0`` — the drive starts at ``t = 0``, so this is
+    just Eq. S4's retarded time being physical (``docs/conventions.md`` §7).  Fully true once
+    ``t >= tau = D / v``.
+    """
     u_arr = np.asarray(u, dtype=np.float64)
     reach = aod.sound_speed * float(t) - 0.5 * aod.aperture
     return np.asarray(geom.sound_sign * u_arr <= reach, dtype=np.bool_)
