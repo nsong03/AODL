@@ -58,11 +58,13 @@ M1 verification report lands.
 | 2026-09-01 | Wave I accepted (WO-12, `f0ac4cf`): 255 tests, 4 notebooks, user story at 25/30/25 µs (original durations band-infeasible — kept as the notebook's Eq. 1 teaser; M4 reprises them with fading-Shepard), 3D-AODL vs 2-AOD contrast 0.00 vs 1.90 z_R. Wave J (WO-13) dispatched. |
 | 2026-09-01 | Wave J verdict: **M3 ACCEPTED** (WO-13; fixes `5d30409` XZ-panel row snapping, `f8d4d71` band-message headroom wording). S19 inverted from waveforms at 1e-15; 2-AOD control fails the astig bound by 317×; Eq. 1 boundary bisected to 1 Hz. |
 | 2026-09-01 | M4 work orders WO-14…WO-16 authored (fading-Shepard); ARCHITECTURE test-tree drift fixed. Wave K (WO-14) dispatched. |
-| 2026-09-02 | Wave M verdict: **M4 ACCEPTED** (WO-16, fix `16a9fd6`). Fade algebra to 1e-16; Shepard bound tight to 0.4 kHz at 7.46× ceiling; F-3 (p_B=0 splatter −40 dB, switch period < transit) prioritized for M5. |
-| 2026-09-02 | M5 work orders WO-17…WO-19 authored; PLAN M4 shadow text corrected. Wave N (WO-17) dispatched. |
-| 2026-09-02 | Wave N accepted (WO-17, `177d8b2`): 322 tests; api front door; even-M lattice coincidence exact (was 0.5 pitch); f_z_bias doubles budget (2.0098, boundaries at ceilings); switch_ramp with (πρ_r)² interior-dip law. Wave O (WO-18) dispatched. |
 | 2026-09-01 | Wave K accepted (WO-14, `5aad94f`): 280 tests; 10 µm × 1 ms hold (5.15× Eq. 1) at 0.43 % flatness, Shepard band bound to 34 Hz. Rulings ratified: shadow ratio 1/2 (implementer's derivation over the WO), slope clamp replaces the ineffective A-clamp; WO-15 amended (`3841c28`). |
 | 2026-09-01 | Wave L accepted (WO-15, `21b5969`): 291 tests, 5 notebooks, movie 05 = the unhurried user story; coherent Gram power validated (destructive pair → 0, frame black); interlaced 0 % vs simultaneous 100 % phase sensitivity. Findings logged: even-M extended grid is (M+1)-wide always; even-M Shepard lattice offset pitch/2 vs S19 (→ M5 backlog); interlacing exact only for Δf_x = Δf_y. Wave M (WO-16) dispatched. |
+| 2026-09-02 | Wave M verdict: **M4 ACCEPTED** (WO-16, fix `16a9fd6`). Fade algebra to 1e-16; Shepard bound tight to 0.4 kHz at 7.46× ceiling; F-3 (p_B=0 splatter −40 dB, switch period < transit) prioritized for M5. |
+| 2026-09-02 | M5 work orders WO-17…WO-19 authored; PLAN M4 shadow text corrected. Wave N (WO-17) dispatched. |
+| 2026-09-02 | Wave N accepted (WO-17, `177d8b2`): 322 tests; api front door; even-M lattice coincidence exact (was 0.5 pitch); f_z_bias doubles the ceiling exactly (hold ratio 2.0098 with 2 µs ramps); switch_ramp with (πρ_r)² interior-dip law. Wave O (WO-18) dispatched. |
+| 2026-09-02 | Wave O accepted (WO-18, `4aaa76e`): 329 tests, 6 notebooks, guide.md + README with executable doc-tests; flagship ρ = 0.30 interior ripple 7.6 % measured. Wave P (WO-19) dispatched. |
+| 2026-09-02 | Wave P verdict: **M5 ACCEPTED — RELEASE CANDIDATE** (WO-19, fix `737eb07`). Founding story verified both modes at 1e-13/1e-15; pre-M5 bit-compatibility proven against `16a9fd6`; switch_ramp FFT −41 → −103 dB. Open: F-2 switch_ramp scope (ruled: p = 0 only → WO-20), F-4 license (owner), doc drift (WO-20/architect). |
 
 ## Backlog (tracked findings, not yet scheduled)
 
@@ -71,15 +73,15 @@ M1 verification report lands.
   fades); compression-correction envelope shape approximation (WO-09 finding 3 — exact
   below `l1·w_in/v ≲ 0.1`, ~1.2e-3 pupil error in the mid band) — quantify all three in
   the M4 notebook and tighten if fades demand it.
-- **M5**: even-M Shepard lattice sits half a pitch off the S19 layout (WO-15 finding —
-  compensate in synthesis so shepard="auto" preserves trap positions); optional
-  retardation pre-compensation (τ/2) and f_Z edge pre-bias (doubles Eq. 1 budget);
-  `power_coherent` in `spot_table`; envelope steps (p_B = 0 rung switch-on) are
-  instantaneous in the model rather than traveling across the aperture — document or
-  model in a fidelity pass.
+- **WO-20 (release-candidate cleanup, in flight)**: switch_ramp narrowed to p = 0 rungs
+  (WO-19 F-2 ruling — identical splatter mitigation, zero interior-column cost); guide
+  §6.7 clause for the two-array-traps-per-group mid-fade case (F-9); CI workflow so the
+  README's "executed in CI" is literally true (F-6); LICENSE once the owner decides (F-4).
 - **Post-release**: schema v3 slot for `SwitchRamped` envelopes (`save()` currently
   refuses switch_ramp > 0 drives by name — WO-17 deviation 2); traveling-edge modeling
-  of envelope steps (the remaining F-3 fidelity item once switch_ramp > 0 is used).
+  of envelope steps (the remaining F-3 fidelity item once switch_ramp > 0 is used);
+  PlanReport ghost-prediction/astig-metric extensions (PLAN §3 M5 wording deferred —
+  WO-19 F-7).
 - Done in M3: two-sided aperture window + term-product guard (WO-10); seed-lucky
   Schroeder-vs-random assertion correction (WO-12). Done in M4: coherent Gram power,
   fast-fade + compression-envelope quantifications, notebook-02 assertion (WO-15).

@@ -256,8 +256,9 @@ parity-dependent.]
 
 **M5 — Product layer.**
 `api.py` front door, trajectory DSL, parametric-NPZ waveform storage + sample rendering
-for AWGs, report generation (band usage,
-predicted ghosts/shadow schedule, astig metrics), docs + notebook gallery, packaging.
+for AWGs, report generation (band usage, axial budget, fade/shadow schedule; per-trap
+astig metrics live in `SpotMetrics`, ghost *prediction* deferred post-release — WO-19
+F-7), docs + notebook gallery, packaging.
 Stretch (post-v1): atom-motion Monte Carlo (Eq. S13), measured-efficiency calibration hooks,
 misalignment/delay-mismatch knobs (Eq. S29), cropped-aperture erf corrections.
 

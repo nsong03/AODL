@@ -66,10 +66,12 @@ AODL/
 ├── pyproject.toml            # package: aodl; deps pinned loosely; ruff + pytest config
 ├── README.md
 ├── docs/
-│   ├── PLAN.md               # physics + milestones (existing)
+│   ├── PLAN.md               # physics + milestones
 │   ├── ARCHITECTURE.md       # this file
-│   ├── waveform_format.md    # NPZ schema for parametric WaveformSet     [M1]
-│   └── conventions.md        # axes, signs, retarded time, units         [M1]
+│   ├── ORCHESTRATION.md      # build process: waves, rulings, backlog
+│   ├── guide.md              # the lab-facing user guide                 [M5]
+│   ├── waveform_format.md    # NPZ schema for parametric WaveformSet
+│   └── conventions.md        # axes, signs, retarded time, units
 ├── src/aodl/
 │   ├── __init__.py           # public API re-exports
 │   ├── params.py             # AODParams, OpticsParams, AODLParams; presets
@@ -105,14 +107,16 @@ AODL/
 │   ├── 02_crossed_pair_diagonal.ipynb   # M2
 │   ├── 03_aodl_3d_motion.ipynb          # M3
 │   ├── 04_array_lift_traverse.ipynb     # M3 (the user story)
-│   └── 05_fading_shepard.ipynb          # M4
+│   ├── 05_fading_shepard.ipynb          # M4
+│   └── 06_product_tour.ipynb            # M5 (the lab-facing demo)
 └── tests/                            # (as built; one file per module plus per-milestone
     ├── test_poly.py … test_tones.py  #  integration suites)
     ├── test_conventions.py  test_device_single_aod.py  test_mixing.py  test_window.py
     ├── test_focal.py  test_measure.py  test_focal_geometry.py  test_grouping.py
     ├── test_ramps.py  test_serialize.py  test_export.py  test_spec.py
-    ├── test_synthesis.py  test_synthesis_s19.py  test_engine.py
-    └── test_integration_m1.py  _m2.py  _m3.py   # per-milestone acceptance
+    ├── test_synthesis.py  test_synthesis_s19.py  test_synthesis_options.py
+    ├── test_shepard.py  test_engine.py  test_api.py  test_docs.py
+    └── test_integration_m1.py  _m2.py  _m3.py  _m4.py   # per-milestone acceptance
                                                  # (spec → waveforms → sim → measured)
 ```
 
@@ -135,7 +139,9 @@ ChannelWaveform    # tones: list[ToneTrack]; compiled to column arrays for vecto
 WaveformSet        # {"Ax","Bx","Ay","By"} → ChannelWaveform
                    # + params snapshot + spec echo + schema_version
                    # .save(path.npz) / .load(path.npz)     ← parameters only
-                   # .render_samples(rate) → {channel: float32 array}   ← AWG target
+                   # sample rendering lives in waveform/export.py:
+                   #   render_samples(wfs, rate) → {channel: float32 array}  ← AWG target
+                   #   (also exposed as MotionPlan.render_samples)
 ```
 
 NPZ schema (detailed in `waveform_format.md`): one structured array per channel — rows =
