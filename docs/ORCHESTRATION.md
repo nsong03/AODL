@@ -65,6 +65,7 @@ M1 verification report lands.
 | 2026-09-02 | Wave N accepted (WO-17, `177d8b2`): 322 tests; api front door; even-M lattice coincidence exact (was 0.5 pitch); f_z_bias doubles the ceiling exactly (hold ratio 2.0098 with 2 µs ramps); switch_ramp with (πρ_r)² interior-dip law. Wave O (WO-18) dispatched. |
 | 2026-09-02 | Wave O accepted (WO-18, `4aaa76e`): 329 tests, 6 notebooks, guide.md + README with executable doc-tests; flagship ρ = 0.30 interior ripple 7.6 % measured. Wave P (WO-19) dispatched. |
 | 2026-09-02 | Wave P verdict: **M5 ACCEPTED — RELEASE CANDIDATE** (WO-19, fix `737eb07`). Founding story verified both modes at 1e-13/1e-15; pre-M5 bit-compatibility proven against `16a9fd6`; switch_ramp FFT −41 → −103 dB. Open: F-2 switch_ramp scope (ruled: p = 0 only → WO-20), F-4 license (owner), doc drift (WO-20/architect). |
+| 2026-09-02 | Wave Q accepted (WO-20, `b4f7e58`): switch_ramp scoped to p = 0 rungs — splatter fix identical (−114 dB either way, A ramps contributed 0.0 dB), interior columns bit-flat; audit's flatness claim refined by parity (even M: every column exact; odd M: the two edge columns pay the (πρ_r)² law, closed form to 5 digits). Guide F-9 clause; CI workflow. **334 tests.** Remaining before tag: F-4 license (owner decision). |
 
 ## Backlog (tracked findings, not yet scheduled)
 
@@ -73,10 +74,8 @@ M1 verification report lands.
   fades); compression-correction envelope shape approximation (WO-09 finding 3 — exact
   below `l1·w_in/v ≲ 0.1`, ~1.2e-3 pupil error in the mid band) — quantify all three in
   the M4 notebook and tighten if fades demand it.
-- **WO-20 (release-candidate cleanup, in flight)**: switch_ramp narrowed to p = 0 rungs
-  (WO-19 F-2 ruling — identical splatter mitigation, zero interior-column cost); guide
-  §6.7 clause for the two-array-traps-per-group mid-fade case (F-9); CI workflow so the
-  README's "executed in CI" is literally true (F-6); LICENSE once the owner decides (F-4).
+- **Awaiting owner**: LICENSE (WO-19 F-4 — pyproject says MIT, README says TBD, no file;
+  note the paper's patent application when choosing).
 - **Post-release**: schema v3 slot for `SwitchRamped` envelopes (`save()` currently
   refuses switch_ramp > 0 drives by name — WO-17 deviation 2); traveling-edge modeling
   of envelope steps (the remaining F-3 fidelity item once switch_ramp > 0 is used);
