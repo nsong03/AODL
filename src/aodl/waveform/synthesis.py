@@ -349,6 +349,10 @@ def _band_message(
     excess, when = (over, t_max) if over > under else (under, t_min)
     ceiling = max_z_integral(params)
     hold_10um = ceiling / (10.0 * um)
+    # The budget is one-sided (f_Z starts at the carrier), so what buys it is the distance
+    # from f_center to the *nearer* band edge -- not the full band width, which would
+    # overstate the ceiling by (hi - lo) / (2 headroom) on an off-centre band.
+    headroom = 0.5 * ceiling / params.lens_scale
     return (
         f"channel {name!r} tone {tone} leaves its usable band: the drive spans "
         f"[{(f_center + f_min) / MHz:.4f}, {(f_center + f_max) / MHz:.4f}] MHz "
@@ -357,7 +361,8 @@ def _band_message(
         f"[{lo / MHz:.4f}, {hi / MHz:.4f}] MHz by {excess / MHz:.4f} MHz at "
         f"t = {when / us:.4g} us.  Sustained axial offset is what costs bandwidth (Eq. 1): "
         f"every channel carries f_Z = int Z dt / (2 lens_scale), and starting from f_center "
-        f"the {(hi - lo) / MHz:.4g} MHz band buys at most |int Z dt| = {ceiling:.4g} m.s "
+        f"the {headroom / MHz:.4g} MHz to the nearer band edge buys at most "
+        f"|int Z dt| = {ceiling:.4g} m.s "
         f"(Z = 10 um held for {hold_10um / us:.4g} us) with nothing else using it — this "
         f"trajectory asks for {requested:.4g} m.s of that, and the array ladder and the "
         f"lateral term take their own share.  Shorten the hold, reduce Z, narrow the array, "
