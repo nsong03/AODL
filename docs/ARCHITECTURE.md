@@ -73,7 +73,7 @@ AODL/
 ├── src/aodl/
 │   ├── __init__.py           # public API re-exports
 │   ├── params.py             # AODParams, OpticsParams, AODLParams; presets
-│   ├── units.py              # MHz/µm/µs constants; MHz↔µm, chirp↔Z calibrations
+│   ├── units.py              # MHz/µm/µs constants (calibrations live on AODLParams)
 │   ├── poly.py               # PiecewisePoly: eval/derivative/antiderivative/shift
 │   ├── trajectory/
 │   │   ├── spec.py           # ArraySpec, Move (lift/translate/lower/hold/waypoints)
@@ -95,7 +95,7 @@ AODL/
 │   │   ├── focal.py          # per-term U(X,Y,Z); frequency grouping; patch accumulation
 │   │   ├── measure.py        # centroid, waists, Z̄, ΔF, σ_astig per spot (analytic)
 │   │   └── reference.py      # direct quadrature of Eq. S11 (tests only)
-│   ├── engine.py             # simulate(WaveformSet, params, times) → SimResult
+│   ├── engine.py             # simulate(wfs, times) → SimResult (params from wfs.params)
 │   ├── viz/
 │   │   ├── style.py          # colormaps (Z-hue), panel layout defaults
 │   │   └── movie.py          # focus-tracked XY view + XZ slice + spectrograms → mp4/gif
@@ -167,7 +167,7 @@ SimResult          # times, per-frame Term arrays, per-spot metrics table
                    # lazy intensity_frame(t, plane=...) evaluator
 ```
 
-`field/focal.py` groups terms by optical frequency (tolerance ~10 kHz): degenerate terms sum
+`field/focal.py` groups terms by optical frequency (GROUP_TOL = 1 kHz with a cluster-diameter cap): degenerate terms sum
 coherently, distinct groups add in intensity (beat notes average out — Supplement
 "interlaced vs simultaneous fading" logic). Per-group evaluation happens on a bounding patch
 (±4 waists) and accumulates into the canvas.

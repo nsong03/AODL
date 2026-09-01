@@ -51,15 +51,16 @@ M1 verification report lands.
 | 2026-09-01 | Wave C accepted (WO-05, `0392e1b`): 122 tests, zero cross-module reconciliations; M1 notebook + movie. Wave D verdict: **M1 ACCEPTED** (WO-06, fix `b2a277d`: fill-transient patch cropping). |
 | 2026-09-01 | M2 work orders WO-07/08/09 authored. Architect rulings: IM3 line table fixed in WO-07 §2 (Bessel-consistent); GROUP_TOL 10 kHz → 1 kHz + cluster-diameter cap; TermLike members become read-only properties + mypy gate (WO-08). Wave E (WO-07) dispatched. |
 
+| 2026-09-01 | Wave E (WO-07, `5905bd6`): IM3 table confirmed by independent derivation + frozen-time projection; 147 tests. Ruling folded into WO-08 §0b (`ca93279`): default mixing_order → 3; serialize carries it. |
+| 2026-09-01 | Wave F accepted (WO-08, `ef09cb0`): 188 tests, mypy gate, notebook 02, Schroeder ghost suppression 57–437×. Wave G verdict: **M2 ACCEPTED** (WO-09, fix `fd1778c`). |
+| 2026-09-01 | M3 work orders WO-10…WO-13 authored; ARCHITECTURE.md drift fixed. Wave H (WO-10 ∥ WO-11) dispatched. |
+
 ## Backlog (tracked findings, not yet scheduled)
 
-- **M3 prerequisite**: two-sided aperture window (counter-propagating pair partially
-  filled from opposite sides currently raises `NotImplementedError`; needs
-  `∫_{u0}^{u1} = E_n(u0) − E_n(lower at u1)` difference moments + `device/aodl.py`
-  interval intersection). Goes in the M3 device work order.
 - **M4**: coherent (Gram-matrix) per-group `power` option for degenerate shadow-tweezer
   pairs; fast-fade α₁ tilt-term power correction (~4% at 1 ms ramps → grows for Shepard
-  fades) — quantify in the M4 notebook.
-- Docs drift: ARCHITECTURE.md §2 says calibrations live in `units.py` (they live on
-  `AODLParams`); §3 `simulate(WaveformSet, params, times)` signature is stale
-  (`params` comes from `wfs.params`). Fix on next docs touch.
+  fades); compression-correction envelope shape approximation (WO-09 finding 3 — exact
+  below `l1·w_in/v ≲ 0.1`, ~1.2e-3 pupil error in the mid band) — quantify all three in
+  the M4 notebook and tighten if fades demand it.
+- Scheduled into M3: two-sided aperture window + term-product guard (WO-10); seed-lucky
+  Schroeder-vs-random assertion correction (WO-12 §cleanups, WO-09 finding 4).
