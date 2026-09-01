@@ -15,6 +15,10 @@ src/aodl/field/measure.py               (edit: hoist, §4.3)
 src/aodl/field/gaussian.py  src/aodl/device/conventions.py  src/aodl/device/aod.py
                                         (edit: docstring citations only, §4.4)
 src/aodl/engine.py                      (edit only if §2 needs a small hook)
+src/aodl/params.py                      (edit: one line, §0b)
+src/aodl/waveform/serialize.py          (edit: carry mixing_order, §0b)
+tests/test_device_single_aod.py  tests/test_integration_m1.py  tests/test_serialize.py
+                                        (edit ONLY per §0b)
 pyproject.toml                          (edit: [tool.mypy] block, §4.1)
 src/aodl/device/aodl.py + src/aodl/field/focal.py (edit: TermLike/mypy, §4.1)
 src/aodl/viz/movie.py                   (edit: mypy narrowings only)
@@ -22,6 +26,19 @@ src/aodl/__init__.py                    (edit: export new synthesis helpers)
 examples/02_crossed_pair_diagonal.ipynb
 tests/test_synthesis.py  tests/test_grouping.py  tests/test_integration_m2.py
 ```
+
+## 0b. Architect ruling — default `mixing_order` flips 1 → 3
+
+WO-07 shipped `AODParams.mixing_order = 1` because the physical default (3) shifts
+amplitudes by the m²/8 compression and breaks M1 tests pinned to exact weak-drive values
+(`tests/test_device_single_aod.py` ~196, ~513 and `test_cartesian_product_over_tones`;
+`tests/test_integration_m1.py` ~313 — locate by behavior, line numbers may have drifted).
+Product realism wins: set the default to **3**, and update those M1 tests to construct
+their params with an explicit `mixing_order=1` (they test the linear physics — that's
+what they should say). Do not weaken any tolerance. Also: `waveform/serialize.py` must
+round-trip `mixing_order` (additive JSON key in `meta`, read with a default of 1 for
+older files so existing NPZ archives load unchanged; extend `test_serialize.py`
+accordingly). Schema version stays 1.
 
 ## 1. `waveform/synthesis.py`
 
