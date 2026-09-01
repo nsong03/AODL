@@ -20,6 +20,13 @@ Eq. S5 amplitude polynomial enters here *normalized to* ``alpha0 = 1``: per line
 is ``(1, -s (A'/A) / v, (A''/A) / (2 v^2))``, and ``alpha`` is the degree-2 truncated
 product of those over the channels sharing an axis.  Constant envelopes therefore give
 ``alpha = (1, 0, 0)`` and the field reduces to ``c * I0``.
+
+**Pruning.**  With intra-AOD mixing on (:mod:`aodl.device.mixing`) a channel carries
+``O(M^3)`` lines and the product carries the *product* of those counts, most of which are
+negligible: a term whose ``|c|`` is a fraction ``eps`` of the strongest one contributes
+``~eps^2`` of relative intensity, so dropping everything below
+``term_prune = 1e-6`` bounds the relative intensity error at ``~1e-12`` while cutting the
+term count sharply.  The discarded power is reported in :attr:`TermArray.pruned_power`.
 """
 
 from __future__ import annotations
@@ -38,6 +45,10 @@ from .conventions import N_AXES, ChannelGeometry, FillEdge
 #: Number of aperture amplitude-polynomial coefficients kept per axis (Eq. S5, truncated
 #: at ``u^2`` — the acoustic-irising term).
 N_ALPHA = 3
+
+#: Default term-level amplitude cut of :func:`build_terms`, as a fraction of the strongest
+#: term's ``|c|``.  Relative intensity error scales as its square (~``1e-12``).
+TERM_PRUNE = 1e-6
 
 
 @dataclass(frozen=True)
@@ -65,6 +76,11 @@ class TermArray:
         Per-axis aperture fill edge, ``(edge_x, edge_y)``; an entry is ``None`` when that
         axis is fully filled.  The fill state depends only on the frame time and the
         channel geometry, so it is shared by every term of the frame.
+    pruned_power:
+        Diagnostic: the ``sum |c|^2`` that pruning removed from this frame — the terms cut
+        here plus the per-channel lines cut by :mod:`aodl.device.mixing`, carried through
+        the product (see :func:`build_terms`).  Compare against ``sum |c|^2`` of the terms
+        that survived for a relative figure; ``0`` when nothing was dropped.
     """
 
     c: NDArray[np.complex128]
@@ -73,6 +89,7 @@ class TermArray:
     alpha: NDArray[np.complex128]
     df_opt: NDArray[np.float64]
     edge: tuple[FillEdge | None, FillEdge | None] = field(default=(None, None))
+    pruned_power: float = 0.0
 
     @property
     def n_terms(self) -> int:
@@ -131,7 +148,30 @@ def _axis_edge(edges: Sequence[FillEdge]) -> FillEdge | None:
     return FillEdge(u_edge=max(positions) if side == "lower" else min(positions), side=side)
 
 
-def build_terms(wfs: Any, t: float, channels: Sequence[str] | None = None) -> TermArray:
+def _lines_pruned_power(lines: Sequence[Lines]) -> float:
+    """Line-level pruned power carried through the channel product.
+
+    ``sum_terms |c|^2 = prod_channels sum_lines |amp|^2`` exactly (the product is
+    Cartesian), so the term power lost with channel ``mu``'s pruned lines is
+    ``pruned_mu * prod_{nu != mu} kept_nu`` to first order in the (tiny) pruned fractions.
+    """
+    kept = [float(np.sum(np.abs(line.amp) ** 2)) for line in lines]
+    total = 0.0
+    for index, line in enumerate(lines):
+        if line.pruned_power:
+            others = 1.0
+            for other in kept[:index] + kept[index + 1 :]:
+                others *= other
+            total += line.pruned_power * others
+    return total
+
+
+def build_terms(
+    wfs: Any,
+    t: float,
+    channels: Sequence[str] | None = None,
+    term_prune: float = TERM_PRUNE,
+) -> TermArray:
     """Expand a :class:`~aodl.waveform.tones.WaveformSet` into pupil terms at time ``t``.
 
     Every combination of one line per participating channel becomes a term (Eq. S7):
@@ -139,6 +179,9 @@ def build_terms(wfs: Any, t: float, channels: Sequence[str] | None = None) -> Te
     amplitude polynomials multiply per axis (truncated at degree 2, Eq. S5).  Channels not
     listed contribute an identity factor — a bare AOD-less axis has ``theta1 = theta2 = 0``
     and ``alpha = (1, 0, 0)``, i.e. just the input Gaussian.
+
+    Terms below the amplitude cut are then dropped: with mixing on, the Cartesian product
+    of ``O(M^3)`` line sets is dominated by combinations far too weak to see.
 
     Parameters
     ----------
@@ -149,11 +192,15 @@ def build_terms(wfs: Any, t: float, channels: Sequence[str] | None = None) -> Te
         Frame time [s].
     channels:
         Which channels to include; ``None`` means every channel present in ``wfs``.
+    term_prune:
+        Drop terms with ``|c| < term_prune * max |c|`` (relative intensity error
+        ``~term_prune^2``); ``0`` keeps every term.  Nothing is ever dropped when the
+        strongest term is itself zero, so the result always holds at least one term.
 
     Returns
     -------
-    :class:`TermArray` with ``N = prod(lines per channel)`` terms (``N = 1`` when no
-    channel is driven).
+    :class:`TermArray` with at most ``N = prod(lines per channel)`` terms (``N = 1`` when no
+    channel is driven), carrying the pruned power as a diagnostic.
     """
     available = dict(wfs.channels)
     names = tuple(available) if channels is None else tuple(channels)
@@ -189,13 +236,28 @@ def build_terms(wfs: Any, t: float, channels: Sequence[str] | None = None) -> Te
             axis_edges[axis].append(edge)
 
     n_terms = int(np.prod(counts)) if counts else 1
+    c = np.ascontiguousarray(amplitude).reshape(n_terms)
+    theta1 = theta1.reshape(N_AXES, n_terms)
+    theta2 = theta2.reshape(N_AXES, n_terms)
+    alpha = alpha.reshape(N_AXES, N_ALPHA, n_terms)
+    df_opt = np.asarray(df_opt, dtype=np.float64).reshape(n_terms)
+
+    pruned = _lines_pruned_power(lines)
+    # `initial` keeps an undriven-but-listed channel (zero lines, so zero terms) working.
+    keep = np.abs(c) >= float(term_prune) * float(np.abs(c).max(initial=0.0))
+    if not keep.all():
+        pruned += float(np.sum(np.abs(c[~keep]) ** 2))
+        c, theta1, theta2 = c[keep], theta1[:, keep], theta2[:, keep]
+        alpha, df_opt = alpha[:, :, keep], df_opt[keep]
+
     return TermArray(
-        c=np.ascontiguousarray(amplitude).reshape(n_terms),
-        theta1=theta1.reshape(N_AXES, n_terms),
-        theta2=theta2.reshape(N_AXES, n_terms),
-        alpha=alpha.reshape(N_AXES, N_ALPHA, n_terms),
-        df_opt=np.asarray(df_opt, dtype=np.float64).reshape(n_terms),
+        c=c,
+        theta1=theta1,
+        theta2=theta2,
+        alpha=alpha,
+        df_opt=df_opt,
         edge=(_axis_edge(axis_edges[0]), _axis_edge(axis_edges[1])),
+        pruned_power=pruned,
     )
 
 

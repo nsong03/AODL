@@ -17,9 +17,10 @@ so tone ``n`` contributes the pupil factor
     amp_n = (i C / 2) A_n(t_c) exp(-i phase_n(t_c))
 
 with ``t_c = t - tau/2`` the beam-center retarded time (Eq. S6, rotating frame — the
-carrier ``f_center`` is dropped, see :mod:`~aodl.device.conventions`).  M1 keeps
-fundamentals only; intra-AOD intermodulation (Eq. S20-S22) lands in M2 as a drop-in
-replacement for :func:`channel_lines` that simply returns more lines.
+carrier ``f_center`` is dropped, see :mod:`~aodl.device.conventions`).  Higher orders of
+the same expansion — compression and intra-AOD intermodulation, Eqs. S20-S22 — live in
+:mod:`aodl.device.mixing`, which :func:`channel_lines` calls to turn those fundamentals
+into the full line set; ``mixing_order=1`` keeps this module's M1 behaviour exactly.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -42,6 +43,9 @@ from .conventions import (
     retarded_time,
 )
 
+if TYPE_CHECKING:  # pragma: no cover - import cycle: mixing.py needs Lines from here
+    from .mixing import MixingConfig
+
 #: Quantities the device layer needs per tone at one retarded time.  Matches the keys of
 #: ``ChannelWaveform.eval_table`` (WO-02 §2); the per-tone API is used as a fallback.
 TABLE_KEYS: tuple[str, ...] = ("f", "fdot", "A", "dA", "d2A", "phase")
@@ -51,21 +55,30 @@ TABLE_KEYS: tuple[str, ...] = ("f", "fdot", "A", "dA", "d2A", "phase")
 class Lines:
     """Emission lines of one channel at one frame time — a struct of arrays.
 
-    All arrays are 1-D with one entry per line (M1: one line per tone).  Values are taken
-    at the **beam-center retarded time** ``t_c = t - tau/2``.
+    All arrays are 1-D with one entry per line: one line per tone at ``mixing_order=1``,
+    plus the compression and IM3 products of :mod:`aodl.device.mixing` at order 3.  Values
+    are taken at the **beam-center retarded time** ``t_c = t - tau/2``.
 
     Attributes
     ----------
     amp:
-        Complex line amplitude ``(i C / 2) A(t_c) exp(-i phase(t_c))`` (Eq. S3/S6,
-        rotating frame).  The envelope value is *already folded in here*, which is why
-        :mod:`aodl.device.aodl` uses only the normalized *shape* of the aperture amplitude
-        polynomial.
+        Complex line amplitude; for a fundamental ``(i C / 2) A(t_c) exp(-i phase(t_c))``
+        (Eq. S3/S6, rotating frame).  The envelope value is *already folded in here*, which
+        is why :mod:`aodl.device.aodl` uses only the normalized *shape* of the aperture
+        amplitude polynomial.
     f, fdot:
         Rotating-frame detuning [Hz] and chirp rate [Hz/s] at ``t_c``.
     A, dA, d2A:
         Envelope value and its first two time derivatives at ``t_c`` [1, 1/s, 1/s^2] —
-        the raw ingredients of the Eq. S5 aperture amplitude polynomial.
+        the raw ingredients of the Eq. S5 aperture amplitude polynomial.  A mixing product
+        reports the *effective* envelope of its constituents (``A_i A_j A_k`` and its
+        derivatives, :mod:`aodl.device.mixing`); only the polynomial's shape is used
+        downstream, so the magnitude is never counted twice.
+    pruned_power:
+        Diagnostic: ``sum |amp|^2`` of the mixing products dropped by the amplitude cut
+        (:attr:`aodl.device.mixing.MixingConfig.line_prune`); ``0`` when nothing was
+        dropped.  Compare against ``sum |amp|^2`` of the surviving lines for a relative
+        figure.
     """
 
     amp: NDArray[np.complex128]
@@ -74,6 +87,7 @@ class Lines:
     A: NDArray[np.float64]
     dA: NDArray[np.float64]
     d2A: NDArray[np.float64]
+    pruned_power: float = 0.0
 
     @property
     def n_lines(self) -> int:
@@ -128,12 +142,14 @@ def channel_table(cw: Any, t: float) -> dict[str, NDArray[np.float64]]:
     return {key: _as_row(table[key]) for key in TABLE_KEYS}
 
 
-def channel_lines(cw: Any, aod: AODParams, t: float) -> Lines:
+def channel_lines(cw: Any, aod: AODParams, t: float, mixing: MixingConfig | None = None) -> Lines:
     """Emission lines of channel waveform ``cw`` at frame time ``t`` (Eq. S3/S6).
 
     Everything is evaluated at the beam-center retarded time ``t_c = t - tau/2``: the
-    drive sample illuminating the aperture center was emitted half a transit earlier.  M1
-    scope is fundamentals only — one line per tone.
+    drive sample illuminating the aperture center was emitted half a transit earlier.  The
+    fundamentals (one line per tone) are then handed to
+    :func:`aodl.device.mixing.expand_lines`, which adds the compression and IM3 lines of
+    Eqs. S20-S22 — or returns them untouched at expansion order 1.
 
     Parameters
     ----------
@@ -141,16 +157,23 @@ def channel_lines(cw: Any, aod: AODParams, t: float) -> Lines:
         A :class:`~aodl.waveform.tones.ChannelWaveform` (duck-typed: see
         :func:`channel_table`).
     aod:
-        Channel hardware parameters (supplies ``v``, ``D``, ``C``).
+        Channel hardware parameters (supplies ``v``, ``D``, ``C``, the band and the default
+        ``mixing_order``).
     t:
         Frame time [s] (the *observation* time, not a drive time).
+    mixing:
+        Expansion order and selection cuts.  ``None`` (the default) means
+        ``MixingConfig(order=aod.mixing_order)``; pass a :class:`
+        ~aodl.device.mixing.MixingConfig` to override the channel's own setting.
     """
+    from .mixing import MixingConfig, expand_lines  # local: mixing.py imports Lines
+
     t_c = beam_center_time(t, aod)
     table = channel_table(cw, t_c)
     amp = (
         0.5j * aod.drive_strength * table["A"].astype(np.complex128) * np.exp(-1j * table["phase"])
     )
-    return Lines(
+    fundamentals = Lines(
         amp=np.asarray(amp, dtype=np.complex128),
         f=table["f"],
         fdot=table["fdot"],
@@ -158,6 +181,8 @@ def channel_lines(cw: Any, aod: AODParams, t: float) -> Lines:
         dA=table["dA"],
         d2A=table["d2A"],
     )
+    cfg = MixingConfig(order=aod.mixing_order) if mixing is None else mixing
+    return expand_lines(fundamentals, aod, cfg)
 
 
 def fill_edge(aod: AODParams, geom: ChannelGeometry, t: float) -> FillEdge | None:

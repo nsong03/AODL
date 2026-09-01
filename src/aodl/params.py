@@ -36,6 +36,18 @@ class AODParams:
         ``C·A`` at unit envelope: the peak phase modulation [rad] imprinted on the
         optical field by a unit-amplitude tone (Eq. S1).  Sets the weak-drive
         expansion order needed for intermodulation products.
+    mixing_order:
+        Order of the ``exp(i C V)`` expansion used by :mod:`aodl.device.mixing`: ``1``
+        keeps the fundamentals only (one emission line per tone, the M1 model), ``3`` adds
+        compression and the IM3 ghosts at ``f_j + f_k - f_i`` (Eqs. S20-S22).  Cost scales
+        as ``O(M^3)`` in the tone count, and the correction to a fundamental is
+        ``O((C·A)^2)`` relative — so ``3`` is what you want whenever ghosts or per-trap
+        intensity errors matter, and ``1`` is the cheap, strictly first-order model.
+
+        The default is ``1``: it is the model the M1 acceptance suite pins (turning mixing
+        on shifts every fundamental by ``~C^2/8``, i.e. 1% at the default drive), so IM3 is
+        opt-in per channel — ``replace(aod, mixing_order=3)`` — or per call, through
+        ``channel_lines(..., mixing=MixingConfig(...))``.
     """
 
     sound_speed: float
@@ -43,6 +55,7 @@ class AODParams:
     f_center: float
     band: tuple[float, float]
     drive_strength: float = 0.30
+    mixing_order: int = 1
 
     def __post_init__(self) -> None:
         if self.sound_speed <= 0.0:
@@ -54,6 +67,8 @@ class AODParams:
         lo, hi = self.band
         if not lo < hi:
             raise ValueError(f"band must be (lo, hi) with lo < hi, got {self.band!r}")
+        if self.mixing_order not in (1, 3):
+            raise ValueError(f"mixing_order must be 1 or 3, got {self.mixing_order!r}")
 
     @property
     def transit_time(self) -> float:
