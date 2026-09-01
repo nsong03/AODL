@@ -101,8 +101,11 @@ still gated except while filling).
   `return_scale=True`, builds `SampleRecord` with the true normalization, builds
   `Expectation` from spec/params/options + `report.fade_events` shadows, default times
   = ~9 deterministic frames (2τ, move seams and midpoints shifted +τ/2 or +0 per
-  retard mode, T+τ/2), validated against the record end
-  (`t ≤ t_end + τ/2 − 4·w_in/v`, engine-style error).
+  retard mode, T+τ/2), validated against the record end using the TRUE aperture reach
+  (**WO-21 correction: `t ≤ t_end + τ/2 − grid.half_span/v`** — the grid spans
+  ≈ 5·w_in so a frame gathers drive up to t + 9.6 µs; the earlier `4·w_in/v` bound is
+  3.1 µs too loose and trips the coverage error), engine-style message. Render with
+  `t_pad` sufficient for the last default frame, or trim the last frame accordingly.
 - `aodl/__init__.py` exports `check_samples`, `CheckReport`, `Tolerances`,
   `Expectation` (+ `load_samples`).
 
@@ -113,8 +116,12 @@ still gated except while filling).
 - `test_check_weak_vs_sim.py` (the cross-validation gate): weak-mode checker vs
   `simulate(..., mixing_order=1 params)` on canonical drives — M1 static + chirped Ay,
   the M3 2×2 lift–traverse–lower, one M4 Shepard-hold frame away from fades: fields
-  ≤ 1e-4 relative, positions ≤ 1e-3·waist0, powers ≤ 3e-4 (the WO-21 error budget gives
-  ~50× headroom); one transient frame at 0.75τ compared loosely (≤ 1e-2) and marked.
+  ≤ 1e-4 relative, positions ≤ 1e-3·waist0, powers ≤ 3e-4. **WO-21 correction: the
+  interpolation law is cubic (ε ≈ 0.016·θ³ → 5.5e-5 at the 15 MHz band edge), so run
+  these tight gates with `demodulate(..., oversample=2)`** (8× better → ≥ 16× headroom
+  even at band edge; typical few-MHz detunings have ~200× regardless). One transient
+  frame at 0.75τ compared loosely (≤ 1e-2) and marked. The verdict-path default stays
+  `oversample=1` (its tolerances are 0.05·waist0-scale — huge margin).
 - `test_check_bragg.py`: bragg at drive_strength=0.01 → weak (≤ 3e-5, error ∝ C²); at
   C=0.3 the `(2J₁(C)/C)²` compression measured; K 64→128 and W×2 move no verdict
   metric by more than 10% of its tolerance (time-averaging convergence).
