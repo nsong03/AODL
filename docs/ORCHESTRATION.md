@@ -54,6 +54,8 @@ M1 verification report lands.
 | 2026-09-01 | Wave E (WO-07, `5905bd6`): IM3 table confirmed by independent derivation + frozen-time projection; 147 tests. Ruling folded into WO-08 §0b (`ca93279`): default mixing_order → 3; serialize carries it. |
 | 2026-09-01 | Wave F accepted (WO-08, `ef09cb0`): 188 tests, mypy gate, notebook 02, Schroeder ghost suppression 57–437×. Wave G verdict: **M2 ACCEPTED** (WO-09, fix `fd1778c`). |
 | 2026-09-01 | M3 work orders WO-10…WO-13 authored; ARCHITECTURE.md drift fixed. Wave H (WO-10 ∥ WO-11) dispatched. |
+| 2026-09-01 | Wave H accepted: WO-11 (`32d0e4c`, exact-to-float64 S19 round trip; PLAN Eq. 1 headroom corrected to one-sided ≈206 µs), WO-10 (`b1c0b63`, τ/2-darkness + erf² fill + 646k-term guard case). Ruling: measure.py two-sided power fix assigned to WO-12 §0. |
+| 2026-09-01 | Wave I accepted (WO-12, `f0ac4cf`): 255 tests, 4 notebooks, user story at 25/30/25 µs (original durations band-infeasible — kept as the notebook's Eq. 1 teaser; M4 reprises them with fading-Shepard), 3D-AODL vs 2-AOD contrast 0.00 vs 1.90 z_R. Wave J (WO-13) dispatched. |
 
 ## Backlog (tracked findings, not yet scheduled)
 
