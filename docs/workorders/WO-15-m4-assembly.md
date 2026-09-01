@@ -9,6 +9,7 @@
 
 ```
 examples/05_fading_shepard.ipynb
+src/aodl/__init__.py                (edit: export ShepardConfig + shepard front-door names)
 src/aodl/field/measure.py           (edit: coherent power option, §2)
 src/aodl/viz/movie.py               (edit only if a small hook is needed)
 tests/test_integration_m4.py
@@ -40,7 +41,9 @@ House style. Sections:
    (tracked mode, hue ↔ Z, XZ panel; budget ≤ 120 s render). This is the product's
    closing argument — say so in one line, not a sales pitch.
 7. **Design-caveat quantifications** (backlog): (a) fast-fade α₁ tilt-term power
-   correction vs fade-zone crossing time (sweep Δf·η/ḟ_Z; mark where it crosses 1%);
+   correction vs the WO-14 validity parameter ρ = (w_in/v)/T_fade (measured anchors:
+   0.43 % flatness at ρ = 0.037, ~9 % at ρ = 0.15 — physics, not error; sweep ρ and
+   mark the 1 % crossing);
    (b) the compression-correction envelope approximation (WO-09 finding 3) evaluated at
    a fade edge — plot pupil error vs `l1·w_in/v`, mark the mid-band ~1.2e-3 regime.
    Keep both cells cheap (< 10 s each).
@@ -69,8 +72,13 @@ itself random; Schroeder always wins but not always by 2×).
 
 - Sustained Z: 10 µm hold, duration ≥ 3× the Eq. 1 ceiling: tracking bounds as M3;
   total power flat to < 1%; plain S19 on the same spec raises.
-- Shadow tweezers at ±deflection_scale·Δf during fades, absent on plateaus; array case
-  shows the (Mx+2)-column extended grid during an x-fade.
+- Shadow tweezers at ±deflection_scale·Δf during fades, absent on plateaus. WO-14
+  corrections to bake in: the mid-fade shadow/trap intensity ratio is **1/2** (geometric
+  mean of the fade factors — see WO-14's report), and the two shadows are mutually
+  frequency-degenerate (one group, centroid at 0) — select by per-term deflection, not by
+  group position. Array case: the (Mx+2)-column extended grid appears at full brightness
+  (Table II's p_B = 0 rectangle switches rungs on discontinuously — state this in the
+  notebook's caveat section alongside pick-up scheduling).
 - Interlaced vs simultaneous: simultaneous config's degenerate shadow pair responds to
   a channel phase offset (power_coherent changes by > 10%); interlaced does not (< 0.1%).
 - The unhurried user story synthesizes, tracks (M3 bounds), and stays inside the band.
