@@ -154,7 +154,8 @@ INDEX_EPS = 1e-9
 _ROOT_TRIM = 1e-12
 
 #: Peak of ``x^2 (1 - sin^4(pi x / 2))`` on ``x`` in ``[0, 1]`` (at ``x = 0.5959``) — the shape
-#: factor of the interior-column flatness cost a :class:`SwitchRamped` rectangle pays.  See
+#: factor of the *edge*-column flatness cost a :class:`SwitchRamped` rectangle pays on an
+#: odd-``M`` ladder (an even-``M`` one pays nothing, and no interior column ever pays).  See
 #: that class' ``Note``; ``tests/test_synthesis_options.py`` re-derives it numerically.
 SWITCH_FLATNESS_SHAPE = 0.20582
 
@@ -534,6 +535,11 @@ class SwitchRamped:
     its derivative vanish at both ends); ``d2A`` jumps at the four gate corners, exactly as it
     does for :class:`~aodl.waveform.tones.SmoothOnOff`.
 
+    **Rectangles only.**  :func:`shepard_ladder` wraps this around a ``p = 0`` window and
+    around no other: a ``cos^p`` window with ``p > 0`` already reaches zero smoothly at its own
+    switching instant, so a gate there buys no continuity — and, because that window *is* the
+    one doing the fading, it would cost flatness the rectangles do not (see the ``Note``).
+
     **The ramps sit inside the window, never outside it.**  Anchoring them at the crossing and
     letting them spill over would drive the rung while ``|g| > g_outer``, i.e. outside the
     interval :func:`shepard_band_bound` bounds — the one claim the whole scheme rests on.
@@ -545,7 +551,8 @@ class SwitchRamped:
     Parameters
     ----------
     base:
-        The rung's :class:`FadeZoneEnvelope` (in practice a ``p = 0`` rectangle).
+        The rung's :class:`FadeZoneEnvelope` — always a ``p = 0`` rectangle where
+        :func:`shepard_ladder` builds one (the class itself accepts any window).
     ramp:
         Ramp duration [s], ``> 0``.
 
@@ -553,19 +560,32 @@ class SwitchRamped:
     ----
     **What a ramp costs.**  Two things, both bounded and both worth stating:
 
-    1. *Interior-column flatness.*  The constant-power identity ``p_A + p_B = 1`` needs the
-       ``B`` rectangle to be **flat** wherever the ``A`` window is fading, and a rung entering
-       at ``t_on`` is exactly the partner of the ``A`` rung entering there.  During the ramp an
-       interior column reads ``cos^2 theta + sin^2 theta * s^2`` instead of ``1``; with the
-       ladder sliding at ``gdot`` the dying weight is ``sin^2(pi gdot (t - t_on) / Delta f)``,
-       so the worst dip is
+    1. *Edge-column flatness — and only edge columns.*  The constant-power identity
+       ``p_A + p_B = 1`` needs the ``B`` rectangle to be **flat** wherever the ``A`` window is
+       fading, so a ramp can only be felt by the columns its own rung feeds *while the ``A``
+       ladder is handing over*.  The ``A`` window's outer boundary sits ``(M - 1) / 2`` rung
+       spacings inside the rectangle's, so which columns those are is decided by the parity of
+       ``M`` (write ``rho_r = |gdot| r / Delta f``, the fraction of a rung spacing the ladder
+       slides during one ramp, and take ``rho_r < 1/2``):
 
-           ``max_x sin^2(pi rho_r x) (1 - sin^4(pi x / 2))  ~  (pi rho_r)^2 *``
-           :data:`SWITCH_FLATNESS_SHAPE`,   ``rho_r = |gdot| r / Delta f``
+       * **even ``M``** — the rung switches half-way between two ``A`` hand-overs, i.e. with a
+         single ``A`` rung live at unit weight.  It therefore feeds exactly one column, the
+         extended one it is arriving at or leaving, and **every column of the array stays
+         exactly flat**;
+       * **odd ``M``** — the rung switches at an ``A`` hand-over, and the rung entering at
+         ``t_on`` is precisely the partner of the ``A`` rung entering there.  The array's two
+         **edge** columns then read ``cos^2 theta + sin^2 theta * s^2`` instead of ``1``, while
+         the ``M - 2`` columns inside them stay exactly flat.  The dying weight is
+         ``sin^2(pi gdot (t - t_on) / Delta f)``, so the worst dip is
 
-       — the fraction of a rung spacing the ladder slides during one ramp.  Keep ``rho_r``
-       small (``rho_r = 0.05`` costs 0.5 %) or accept the trade; the extended column, which had
-       no continuity at all, gains it in exchange.
+             ``max_x sin^2(pi rho_r x) (1 - sin^4(pi x / 2))  <=  (pi rho_r)^2 *``
+             :data:`SWITCH_FLATNESS_SHAPE`
+
+         — 0.5 % at ``rho_r = 0.05``, 1.54 % at ``rho_r = 0.087``, 20 % at ``rho_r = 0.34``.
+         ``tests/test_synthesis_options.py`` measures that law to five digits.
+
+       Either way the extended column, which had no continuity at all, gains it in exchange.
+
     2. *Aperture-expansion validity.*  A ``p = 0`` rectangle has ``dA = d2A = 0``, so a ramped
        rung is the only place the array row's irising terms come from at all, and they are
        largest at the corners of the gate — where ``A`` vanishes as ``(t - t_on)^2`` while the
@@ -833,9 +853,10 @@ class ShepardConfig:
         is what makes an even-``M`` Shepard array land on the same lattice as Eq. S19; a mapping
         ``{channel: offset [Hz]}`` sets it by hand (``{}`` reproduces the pre-M5 behaviour).
     switch_ramp:
-        Raised-cosine on/off ramp [s] applied to the ``p = 0`` (rectangular) rungs, anchored at
-        their own switching instants — :class:`SwitchRamped`, the mitigation for the splatter a
-        step-switched array ladder radiates.  ``0`` (default) is Table II verbatim.
+        Raised-cosine on/off ramp [s] applied to the ``p = 0`` (rectangular) rungs and to no
+        others, anchored at their own switching instants — :class:`SwitchRamped`, the
+        mitigation for the splatter a step-switched array ladder radiates.  ``0`` (default) is
+        Table II verbatim.
     """
 
     delta_f_x: float
@@ -1175,8 +1196,10 @@ def shepard_ladder(
         Constant [Hz] added to the rung frequencies and to nothing else
         (:func:`lattice_comb_offset`): the whole comb translates, the schedule does not move.
     switch_ramp:
-        Raised-cosine on/off ramp [s] wrapped around each rung's window
-        (:class:`SwitchRamped`).  ``0`` (default) leaves the Table II window as it is.
+        Raised-cosine on/off ramp [s] wrapped around the windows of a ``p = 0``
+        (rectangular) ladder and around nothing else (:class:`SwitchRamped`): a ``cos^p``
+        window with ``p > 0`` already switches smoothly and ramping it would only cost
+        flatness.  ``0`` (default) leaves the Table II window as it is.
 
     Returns
     -------
@@ -1196,7 +1219,7 @@ def shepard_ladder(
         g = f_z.offset((float(n) + fade.xi) * delta_f)
         window = FadeZoneEnvelope(g=g, delta_f=delta_f, eta=eta, p=fade.p, m=fade.m, amp=float(amp))
         env: FadeZoneEnvelope | SwitchRamped = window
-        if ramp > 0.0:
+        if ramp > 0.0 and fade.p == 0.0:
             env = SwitchRamped(base=window, ramp=ramp)
         tones.append(
             ToneTrack(

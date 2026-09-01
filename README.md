@@ -45,8 +45,9 @@ Tweezer Control for Rapid Atom Rearrangement* ([arXiv:2510.11451](https://arxiv.
 `S#` equation numbers in the code refer to its Supplement.
 
 **Built:** M1–M5 — single AOD → crossed pair → full 3D-AODL → fading-Shepard → product API.
-**Checked:** **329 tests**, six notebooks executed in CI, and an independent verification pass
-per milestone (M1–M5 accepted).
+**Checked:** **334 tests**, six notebooks executed in CI
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs lint, types, the suite and the
+notebooks on every push), and an independent verification pass per milestone (M1–M5 accepted).
 
 ## Install
 

@@ -16,8 +16,11 @@ claims, and that switching it off reproduces the pre-M5 drive bit for bit.
 3. **§2.3 the ``f_Z`` edge pre-bias.**  Starting the drive half an excursion below the carrier
    centres the ``f_Z`` walk in the band and doubles Eq. 1's budget — ``docs/PLAN.md`` §1.5's
    412 µs — while moving no trap, because the bias is common to all four channels.
-4. **§2.4 ``switch_ramp``.**  Raised-cosine on/off ramps for the ``p_B = 0`` rectangles, which
-   trade a little interior-column flatness (by a law derived here) for a continuous switch.
+4. **§2.4 ``switch_ramp``.**  Raised-cosine on/off ramps for the ``p_B = 0`` rectangles — and
+   for nothing else (WO-20 §1): the ``cos^p`` windows switch smoothly already, so ramping them
+   bought no continuity and cost flatness.  Scoped that way the ramp leaves every interior
+   column *exactly* where it was; only an odd-``M`` ladder's two edge columns pay, by the law
+   derived here.
 
 ``mixing_order=1`` throughout: these are statements about the frequency/amplitude algebra, not
 about intermodulation.
@@ -497,6 +500,96 @@ def _rung_slide_rate(params) -> float:
     return 6.0 * um / (2.0 * params.lens_scale)
 
 
+def _ladder_spec(m_x: int) -> TrajectorySpec:
+    """``RAMP_SPEC``'s move on an ``m_x``-column ladder with a free (single-tweezer) y axis.
+
+    One ladder at a time.  The y channels then carry Table II's single-tweezer row (``p = 1/2``
+    on both), which has no rectangle and so is never ramped: every x column is scaled by one
+    common y factor, which cancels out of the ramped-vs-plain comparisons below.
+    """
+    return replace(RAMP_SPEC, array=ArraySpec(m_x, 1, DF, 0.0))
+
+
+def _x_columns(wfs: WaveformSet, optics, t: float, pitch: float, origin: float) -> dict[int, float]:
+    """``{column index: summed |c|^2}`` at frame time ``t``, with **nothing** pruned.
+
+    The default term cut drops the weakest lines, which is exactly what a column halfway
+    through a ramp is; these comparisons are between two drives at ``1e-9``, so they take the
+    whole census.  ``origin`` is where column ``0`` sits — half a pitch out for an even-``M``
+    ladder, whose Eq. S19 lattice straddles the array centre.
+    """
+    terms = build_terms(wfs, float(t), term_prune=0.0)
+    xc, _, _, _ = spot_params(terms, optics, 0.0)
+    out: dict[int, float] = {}
+    for x, c in zip(xc, terms.c, strict=True):
+        key = int(round((float(x) - origin) / pitch))
+        out[key] = out.get(key, 0.0) + float(abs(c) ** 2)
+    return out
+
+
+def test_the_ramp_wraps_the_p_zero_rectangles_and_nothing_else(params1030):
+    """WO-20 §1: the ramp is Table II's rectangles' business, and no other window's.
+
+    A ``cos^p`` window with ``p > 0`` already reaches zero smoothly at its own switching
+    instant, so a gate there buys no continuity — and, being the window that does the fading,
+    it is the one that would pay for the gate in flatness
+    (:func:`test_a_ramp_moves_only_the_columns_the_ramping_rung_feeds`).
+    """
+    params = _linear(params1030)
+    ramp = 3.0 * us
+    array = synthesize(RAMP_SPEC, params, shepard=ShepardConfig(DF, DF, switch_ramp=ramp))
+
+    assert {
+        name: sorted({type(tone.env).__name__ for tone in cw.tones})
+        for name, cw in array.channels.items()
+    } == {
+        "Ax": ["FadeZoneEnvelope"],  # Table II array row: p_A = 1, the shaped window
+        "Ay": ["FadeZoneEnvelope"],
+        "Bx": ["SwitchRamped"],  # ... and p_B = 0, the rectangle that steps
+        "By": ["SwitchRamped"],
+    }
+    assert all(tone.env.ramp == ramp for tone in array.channels["Bx"].tones)
+    assert all(tone.env.base.p == 0.0 for tone in array.channels["By"].tones)
+
+    # a single-tweezer axis splits the fade (1/2, 1/2): no rectangle, hence no ramp at all
+    single = replace(RAMP_SPEC, array=ArraySpec(1, 1))
+    free = synthesize(single, params, shepard=ShepardConfig(DFY_FREE, DFY_FREE, switch_ramp=ramp))
+    assert all(
+        isinstance(tone.env, FadeZoneEnvelope) for cw in free.channels.values() for tone in cw.tones
+    )
+
+
+def test_the_ramp_removes_the_rectangles_steps_and_the_a_windows_never_had_any(params1030):
+    r"""The splatter proxy: a **step** in ``A(t)`` is the broadband event, and only ``p = 0`` steps.
+
+    Counted across every one of a rung's own ``|g| = g_outer`` crossings, as
+    ``|A(t + eps) - A(t - eps)|`` against half the rectangle's own unit step (a ``cos^p``
+    shoulder is steep there, but continuous, and shrinks with ``eps``).  Table II's rectangles
+    step at all of theirs and the ramp removes every one; the ``A`` channels' windows step at
+    none, ramped or not — which is why ramping them was never what cut the splatter (WO-19 F-2).
+    """
+    params = _linear(params1030)
+    plain = synthesize(RAMP_SPEC, params, shepard=ShepardConfig(DF, DF))
+    ramped = synthesize(RAMP_SPEC, params, shepard=ShepardConfig(DF, DF, switch_ramp=3.0 * us))
+
+    def steps(wfs: WaveformSet, channel: str) -> int:
+        t0, t1 = wfs.t_span
+        count = 0
+        for tone in wfs.channels[channel].tones:
+            env = tone.env
+            for t in env.crossing_times(env.g_outer):
+                if not t0 + TIME_TOL < float(t) < t1 - TIME_TOL:
+                    continue  # the span's own ends are not switches
+                jump = abs(float(env.A(float(t) + 1e-12)) - float(env.A(float(t) - 1e-12)))
+                count += int(jump > 0.5)
+        return count
+
+    assert steps(plain, "Bx") > 0 and steps(plain, "By") > 0
+    assert steps(ramped, "Bx") == steps(ramped, "By") == 0
+    for channel in ("Ax", "Ay"):
+        assert steps(plain, channel) == steps(ramped, channel) == 0
+
+
 def test_the_switch_ramp_is_a_raised_cosine_inside_the_rungs_own_switch_instants(params1030):
     r"""``A = A_fade sin^2(pi u / 2r)`` on the way in, mirrored on the way out, ``dA`` continuous.
 
@@ -537,86 +630,172 @@ def test_the_switch_ramp_is_a_raised_cosine_inside_the_rungs_own_switch_instants
     assert np.all(np.asarray(env.A(probes)) <= np.asarray(reference.A(probes)) + 1e-15)
 
 
-def test_the_extended_column_ramps_up_instead_of_switching_on(params1030):
+@pytest.mark.parametrize("m_x", [3, 4])
+def test_the_switching_column_ramps_up_instead_of_switching_on(params1030, m_x):
     r"""Table II's ``p_B = 0`` column *appears*; with a ramp it *arrives*, over ``switch_ramp``.
 
-    The ``(Mx + 2)`` extended column is fed by a single ``(A, B)`` combination whose ``B`` rung
-    has just entered the rectangle, so its brightness is that rung's envelope squared: a step
-    without the ramp, a monotone ``sin^4`` rise with it.
+    The column a rung is arriving at is fed by that rung and one ``A`` rung alone, so its
+    brightness is the rung's envelope squared times a factor common to both drives: a step
+    without the ramp, a monotone ``sin^4`` rise with it, and *exactly* ``sin^4(pi/4) = 1/4`` of
+    the un-ramped column halfway through — the common factor cancels in that ratio, so it is an
+    identity, not a tolerance.
     """
     params = _linear(params1030)
     optics = params.optics
     tau = params.channels["Ax"].transit_time
     pitch = params.deflection_scale * DF
+    origin = 0.5 * pitch if m_x % 2 == 0 else 0.0
     ramp = 3.0 * us
-    ramped = synthesize(RAMP_SPEC, params, shepard=ShepardConfig(DF, DF, switch_ramp=ramp))
-    plain = synthesize(RAMP_SPEC, params, shepard=ShepardConfig(DF, DF))
+    spec = _ladder_spec(m_x)
+    ramped = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE, switch_ramp=ramp))
+    plain = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE))
 
     tones = ramped.channels["Bx"].tones
     env = tones[len(tones) // 2].env
     t_on, _, rise, _ = env._gates
     entry = float(t_on[np.nonzero(rise > 0.0)[0][0]])
-    frames = entry + 0.5 * tau + np.linspace(-0.25 * ramp, 1.25 * ramp, 25)
+    frames = entry + 0.5 * tau + np.linspace(0.0, ramp, 21)  # the ramp itself, retarded by tau/2
 
-    def extra(wfs, t: float) -> float:
-        nodes = _nodes(wfs, optics, t, (pitch, pitch))
-        interior = max(nodes.get((i, 0), 0.0) for i in (-1, 0, 1))
-        return sum(nodes.get((i, 0), 0.0) for i in (-2, 2)) / interior
+    traces = [_x_columns(ramped, optics, float(t), pitch, origin) for t in frames]
+    arriving = max(traces[-1], key=lambda d: traces[-1][d] - traces[0].get(d, 0.0))
+    assert traces[0].get(arriving, 0.0) < 1e-9 * max(traces[0].values())  # dark at the switch
 
-    with_ramp = np.array([extra(ramped, float(t)) for t in frames])
-    without = np.array([extra(plain, float(t)) for t in frames])
+    def brightness(wfs, t: float) -> float:
+        """The arriving column against the full-depth columns beside it (a common factor)."""
+        cols = _x_columns(wfs, optics, t, pitch, origin)
+        return cols.get(arriving, 0.0) / max(cols.values())
+
+    with_ramp = np.array([cols[arriving] / max(cols.values()) for cols in traces])
+    without = np.array([brightness(plain, float(t)) for t in frames])
     assert np.all(np.diff(with_ramp) >= -1e-12)  # monotone: it fades up, it does not flicker
-    assert with_ramp[0] == 0.0 and with_ramp[-1] > 0.9
+    assert with_ramp[0] < 1e-9 and with_ramp[-1] == pytest.approx(without[-1], rel=1e-9)
     assert float(np.max(np.diff(with_ramp))) < 0.2  # ... over the whole ramp, not in one step
-    assert float(np.max(np.diff(without))) > 0.9  # the rectangle switches on all at once
+    assert float(np.min(without[1:])) > 0.9  # the rectangle was there in full from the instant
     # halfway through the ramp the new column carries sin^4(pi/4) = 1/4 of a full one
     middle = entry + 0.5 * tau + 0.5 * ramp
-    assert extra(ramped, middle) == pytest.approx(0.25 * extra(plain, middle), rel=0.02)
+    assert brightness(ramped, middle) == pytest.approx(0.25 * brightness(plain, middle), rel=1e-9)
 
 
-def test_a_ramp_costs_interior_flatness_only_by_the_documented_rho_law(params1030):
-    r"""What a ramp buys and what it costs, both measured against a law derived here.
+@pytest.mark.parametrize("m_x, n_paying", [(3, 1), (4, 0)], ids=["odd-M", "even-M"])
+def test_a_ramp_moves_only_the_columns_the_ramping_rung_feeds(params1030, m_x, n_paying):
+    r"""The WO-20 §1 ruling, measured: every other column is the un-ramped one, to ``1e-9``.
 
-    The constant-power identity needs the ``B`` rectangle flat wherever the ``A`` window fades,
-    and the rung entering at ``t_on`` is precisely the partner of the ``A`` rung entering there.
-    So an interior column reads ``cos^2 theta + sin^2 theta s(t)^2`` during a ramp, and with the
-    ladder sliding at ``gdot`` the dip is bounded by
+    A ramp is felt only by the columns its own rung feeds while it is inside the ramp, and how
+    many that is follows from the parity of ``M``: the ``A`` window's outer boundary sits
+    ``(M - 1)/2`` rung spacings inside the rectangle's, so
+
+    * **even** ``M`` — the rung switches half-way between two ``A`` hand-overs, with one ``A``
+      rung live at unit weight.  It feeds **one** column, the one it is arriving at or leaving,
+      and every other column of the pattern is untouched;
+    * **odd** ``M`` — it switches at a hand-over, so it also pairs with the entering (or
+      leaving) ``A`` rung: **two** columns move, the switching one and the array's own edge
+      column next to it, the latter by the law of
+      :func:`test_the_edge_columns_pay_the_documented_rho_law`.
+
+    Everything else — the interior of the array, both extended columns on the far side — is the
+    un-ramped drive, term for term.  That is the whole point of scoping the ramp to ``p = 0``.
+    """
+    params = _linear(params1030)
+    optics = params.optics
+    tau = params.channels["Ax"].transit_time
+    pitch = params.deflection_scale * DF
+    origin = 0.5 * pitch if m_x % 2 == 0 else 0.0
+    ramp = 3.0 * us
+    spec = _ladder_spec(m_x)
+    plain = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE))
+    ramped = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE, switch_ramp=ramp))
+
+    tones = ramped.channels["Bx"].tones
+    env = tones[len(tones) // 2].env
+    t_on, t_off, rise, fall = env._gates
+    switches = np.concatenate([t_on[rise > 0.0], t_off[fall > 0.0]])
+    assert switches.size == 2  # this rung enters and leaves inside the run
+
+    for switch in switches:
+        frames = float(switch) + 0.5 * tau + np.linspace(-1.25 * ramp, 1.25 * ramp, 21)
+        reference = [_x_columns(plain, optics, float(t), pitch, origin) for t in frames]
+        measured = [_x_columns(ramped, optics, float(t), pitch, origin) for t in frames]
+
+        worst = {d: 0.0 for frame in reference for d in frame}
+        depth = {d: 1.0 for d in worst}
+        for want, got in zip(reference, measured, strict=True):
+            full = max(want.values())
+            for d in worst:
+                worst[d] = max(worst[d], abs(got.get(d, 0.0) - want.get(d, 0.0)) / full)
+                depth[d] = min(depth[d], want.get(d, 0.0) / full)
+        moved = sorted(d for d, v in worst.items() if v > 1e-9)
+        for d in set(worst) - set(moved):
+            assert worst[d] == 0.0, f"column {d} moved by {worst[d]:.3e}"  # bit-identical
+        assert len(moved) == n_paying + 1, f"columns {moved} moved at {switch / us:.3f} us"
+
+        # one of them is the column the rung is switching (dark on one side of the instant);
+        # the other, on an odd-M ladder, is an array column at full depth that dips a little.
+        switching = [d for d in moved if depth[d] < 1e-12]
+        paying = [d for d in moved if depth[d] > 0.99]
+        assert len(switching) == 1 and len(paying) == n_paying
+        for d in paying:
+            assert 1e-3 < worst[d] < 0.05  # not passing by being tiny; see the rho_r law
+
+
+def test_the_edge_columns_pay_the_documented_rho_law(params1030):
+    r"""What a ramp costs on an odd-``M`` ladder, measured against a law derived here.
+
+    The rung entering at ``t_on`` is precisely the partner of the ``A`` rung entering there, so
+    an **edge** column reads ``cos^2 theta + sin^2 theta s(t)^2`` instead of ``1`` during the
+    ramp.  With the ladder sliding at ``gdot`` the dying weight is ``sin^2(pi rho_r x)``, so the
+    dip is
 
         ``max_x sin^2(pi rho_r x) (1 - sin^4(pi x / 2))  <=  (pi rho_r)^2 *``
         :data:`~aodl.waveform.shepard.SWITCH_FLATNESS_SHAPE`
 
-    with ``rho_r = |gdot| r / delta_f``.  A ``tau``-scale ramp on a 1 MHz ladder is a *fast*
-    fade by that measure (``rho_r = 0.34``) and pays 15 %; a 1 µs ramp pays 0.1 %.
+    with ``rho_r = |gdot| r / delta_f`` and ``x`` the fraction of the ramp elapsed.  A
+    ``tau``-scale ramp on a 1 MHz ladder is a *fast* fade by that measure (``rho_r = 0.34``) and
+    pays 20 %; a 1 µs ramp pays 0.17 %.  Both are checked against the closed form on the same
+    ``x`` grid the frames sample — not only against its small-``rho_r`` bound.
     """
     params = _linear(params1030)
     optics = params.optics
     tau = params.channels["Ax"].transit_time
     pitch = params.deflection_scale * DF
     slide = _rung_slide_rate(params)
+    spec = _ladder_spec(3)
+    columns = (-1, 0, 1)
 
     # the shape factor, re-derived numerically rather than trusted
-    x = np.linspace(0.0, 1.0, 200001)
-    assert float(np.max(x**2 * (1.0 - np.sin(0.5 * np.pi * x) ** 4))) == pytest.approx(
+    fine = np.linspace(0.0, 1.0, 200001)
+    assert float(np.max(fine**2 * (1.0 - np.sin(0.5 * np.pi * fine) ** 4))) == pytest.approx(
         SWITCH_FLATNESS_SHAPE, rel=1e-4
     )
 
-    probes = np.linspace(tau, 200.0 * us, 400)
-    measured = {}
-    for ramp in (0.0, 1.0 * us, tau):
-        cfg = ShepardConfig(DF, DF, switch_ramp=ramp)
-        wfs = synthesize(RAMP_SPEC, params, shepard=cfg)
-        worst = 0.0
-        for t in probes:
-            nodes = _nodes(wfs, optics, float(t), (pitch, pitch))
-            reference = max(nodes.values())
-            interior = min(nodes.get((i, j), 0.0) for i in (-1, 0, 1) for j in (-1, 0, 1))
-            worst = max(worst, 1.0 - interior / reference)
-        measured[ramp] = worst
-        bound = (np.pi * slide * ramp / DF) ** 2 * SWITCH_FLATNESS_SHAPE
-        assert worst <= bound + 1e-9, f"ramp {ramp / us:g} us: {worst:.4f} > {bound:.4f}"
+    plain = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE))
+    # Table II verbatim: the three columns carry the same light at every instant (p_A + p_B = 1)
+    for t in np.linspace(tau, 200.0 * us, 120):
+        want = _x_columns(plain, optics, float(t), pitch, 0.0)
+        assert min(want[d] for d in columns) == pytest.approx(
+            max(want[d] for d in columns), rel=1e-12
+        )
 
-    assert measured[0.0] < 1e-9  # Table II verbatim is flat, as M4 measured it
-    assert measured[1.0 * us] < 0.01  # a short ramp is free
+    x = np.linspace(0.0, 1.0, 41)
+    measured = {}
+    for ramp in (1.0 * us, tau):
+        wfs = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE, switch_ramp=ramp))
+        tones = wfs.channels["Bx"].tones
+        t_on, t_off, rise, fall = tones[len(tones) // 2].env._gates
+        frames = np.concatenate([t_on[rise > 0.0][0] + x * ramp, t_off[fall > 0.0][0] - x * ramp])
+        worst = 0.0
+        for t in frames + 0.5 * tau:
+            want = _x_columns(plain, optics, float(t), pitch, 0.0)
+            got = _x_columns(wfs, optics, float(t), pitch, 0.0)
+            worst = max(worst, max(1.0 - got[d] / want[d] for d in columns))
+        measured[ramp] = worst
+
+        rho_r = slide * ramp / DF
+        law = float(np.max(np.sin(np.pi * rho_r * x) ** 2 * (1.0 - np.sin(0.5 * np.pi * x) ** 4)))
+        bound = (np.pi * rho_r) ** 2 * SWITCH_FLATNESS_SHAPE
+        assert worst == pytest.approx(law, rel=1e-3), f"ramp {ramp / us:g} us"
+        assert worst <= bound + 1e-12, f"ramp {ramp / us:g} us: {worst:.4f} > {bound:.4f}"
+
+    assert measured[1.0 * us] < 0.01  # a short ramp is nearly free
     assert measured[tau] > 0.05  # ... and a tau-scale one on a 1 MHz ladder is not
 
 

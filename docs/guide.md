@@ -282,8 +282,10 @@ uses ~40 frames over `[τ, T + τ/2]`: starting at a full transit skips the fill
 ending half a transit past the trajectory is what lets the *last requested instant* be
 observed.
 
-`SpotMetrics`, one per optical-frequency group per frame — one tweezer, except where a fading
-drive puts a co-located pair on the same node (§6.7):
+`SpotMetrics`, one per optical-frequency group per frame — one tweezer, except under a fading
+drive, where a group can hold a co-located pair on one node *or*, mid-hand-over, two array traps
+two pitches apart, whose `x`/`y` is then a mean of two positions rather than either of them
+(§6.7):
 
 | Field | Meaning |
 |-------|---------|
@@ -371,9 +373,15 @@ hidden inside the code: the same list, drive-specific, comes back in `plan.repor
 6. **`p_B = 0` rectangles.** An array's `B` ladder must not be shaped (Table II), so its rungs
    switch on and off instantaneously and radiate roughly **−40 dB** of out-of-band splatter,
    with a switching period shorter than the aperture transit. `switch_ramp=<seconds>` replaces
-   the step with a raised cosine; interior columns then dip by ~`(π|ġ|r/Δf)²/5` during a ramp,
-   and such a drive does not round-trip through the NPZ (§5.1). The model also treats the
-   step as instantaneous *across the whole aperture* rather than travelling through it — a
+   the step with a raised cosine, on **the rectangles only** — the `cos^p` `A` windows already
+   reach zero smoothly, so ramping them bought no continuity and cost flatness. Scoped that way
+   a ramp leaves the interior of the array *exactly* where it was: the only column that moves is
+   the one the switching rung is arriving at (or leaving) — plus, on an **odd**-M ladder, whose
+   rungs switch in step with an `A` hand-over, the array's own two **edge** columns, which dip by
+   ~`(π|ġ|r/Δf)²/5` (**1.54 %** at `r = 3 µs` on a 1 MHz ladder holding 6 µm, 20 % at `r = τ`).
+   An **even**-M ladder switches mid-plateau, where the `A` ladder is not handing over, and pays
+   nothing at all. Such a drive does not round-trip through the NPZ (§5.1). The model also treats
+   the step as instantaneous *across the whole aperture* rather than travelling through it — a
    fidelity item, tracked in the backlog.
 
 7. **Extended grid, and pick-up scheduling.** A fading array is wider than the array you
@@ -381,6 +389,17 @@ hidden inside the code: the same list, drive-specific, comes back in `plan.repor
    even M**. Shadow tweezers sit at `± deflection_scale · Δf` and reach half a trap's power
    mid-fade. `plan.report.fade_events` lists every hand-over with its axis and shadow offset —
    schedule pick-ups on the plateaus between them.
+
+   **A mid-fade group can hold two real traps.** A term's optical-frequency tag is the *sum* of
+   its channel frequencies, while its position is the per-axis *difference*
+   (`docs/conventions.md` §4–5): the rung pairs `(a, b)` and `(a−1, b+1)` therefore share a tag —
+   `a + b` — but sit **two pitches apart**. Both `A` rungs are live during a hand-over, so the
+   lit columns pair up two apart and `SpotMetrics.x`/`y`, being power-weighted means over a
+   group, report the point halfway between two traps, where there is no light. (A different
+   degeneracy from the equal-spacing one of §6.8, which merges whole anti-diagonals.) Read group
+   positions on the plateaus, and track individual traps mid-fade **per term** — build the terms
+   with `aodl.device.aodl.build_terms` and bin them by position, as the M3/M4 integration tests
+   do — rather than by group.
 
 8. **Interlacing is exact only for equal spacings.** `ξ = ½` tiles the x fade zones into the y
    plateaus when `Δf_x = Δf_y`. `auto_config` sizes each free axis against its own headroom
@@ -467,4 +486,6 @@ Measured elsewhere and quoted above: ρ ≈ 0.057 for 1 % flatness and 0.43 % at
 (`examples/05` §7); ρ = 0.30 and a 7.6 % per-hand-over ripple for the array of
 `examples/06` §5; the 8.6e-4 residual weight and the −40 dB splatter (M4 verification,
 `docs/ORCHESTRATION.md`); 57–437× Schroeder ghost suppression (M2); the 204 µs → 410 µs
-bisected hold under `f_z_bias` (M5).
+bisected hold under `f_z_bias` (M5); the 1.54 % and 20 % edge-column dips of a `switch_ramp`
+at `r = 3 µs` and `r = τ`, checked against the closed form in
+`tests/test_synthesis_options.py`.

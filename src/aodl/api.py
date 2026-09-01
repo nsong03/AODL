@@ -528,13 +528,28 @@ def _notes(
                 notes.append(
                     "the array's B rungs are Table II rectangles (p_B = 0): they switch on and "
                     "off instantaneously, radiating roughly -40 dB of out-of-band splatter.  "
-                    "Pass switch_ramp (a few us) to ramp them smoothly instead."
+                    "A few us of switch_ramp removes it at no interior cost - only the "
+                    "rectangles are ramped, and the cos^p A windows already switch smoothly."
                 )
             else:
+                odd = [
+                    axis
+                    for axis, count in (("x", array.mx), ("y", array.my))
+                    if count > 1 and count % 2
+                ]
+                axes = " and ".join(odd)
+                whose = f"{axes} ladders'" if len(odd) > 1 else f"{axes} ladder's"
+                cost = (
+                    f"the interior columns stay exactly flat, and only the {whose} two "
+                    f"edge columns dip, by ~(pi |gdot| r / delta_f)^2 / 5 during a hand-over"
+                    if odd
+                    else "every column of the array stays exactly flat (an even-M rung "
+                    "switches mid-plateau, where the A ladder is not handing over)"
+                )
                 notes.append(
-                    f"switch_ramp = {ramp / us:.3g} us softens the p_B = 0 rectangles; interior "
-                    f"columns dip by ~(pi |gdot| r / delta_f)^2 / 5 during a ramp, and such a "
-                    f"drive does not round-trip through the parametric NPZ."
+                    f"switch_ramp = {ramp / us:.3g} us softens the p_B = 0 rectangles and "
+                    f"nothing else: {cost}.  Such a drive does not round-trip through the "
+                    f"parametric NPZ."
                 )
         notes.append(
             "shadow tweezers at +- deflection_scale * delta_f carry half a trap's power "
