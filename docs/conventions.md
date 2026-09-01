@@ -105,9 +105,10 @@ part is common to every term and is ignored; a term's tag is
 df_opt = sum over participating channels of f(t_c)      [Hz]
 ```
 
-`field/focal.py` groups terms by `df_opt` (tolerance ~10 kHz): degenerate terms interfere
-coherently, distinct groups add in intensity because their MHz beat notes average out over
-any camera or atomic timescale (`PLAN.md` §1.3).
+`field/focal.py` groups terms by `df_opt` (default tolerance `GROUP_TOL` = **1 kHz**, which
+also caps a group's total width, not just the gap between neighbours — see
+`focal.group_terms`): degenerate terms interfere coherently, distinct groups add in intensity
+because their MHz beat notes average out over any camera or atomic timescale (`PLAN.md` §1.3).
 
 ---
 

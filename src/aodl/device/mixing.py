@@ -68,6 +68,14 @@ so the line's Eq. S5 aperture polynomial keeps the fundamentals' normalized form
 ``A, dA, d2A`` triple and :mod:`aodl.device.aodl` normalizes it exactly as before, with the
 envelope magnitude living (once) in the complex amplitude.
 
+*One approximation lives here.*  The compression correction is folded into its fundamental
+(above), so it inherits the fundamental's envelope shape ``l1_n, l2_n`` rather than the
+``A_n^3`` / ``A_n A_m^2`` shape its own amplitude implies.  For a constant envelope the two
+are identical (``l1 = l2 = 0``); they differ only while an envelope ramps, by
+``O(m^2)`` of a term that is itself the ``O(m^2)`` correction, and by less than the
+degree-2 truncation of ``alpha`` itself once the ramp is fast enough to matter.  Revisit
+with the fading-Shepard envelopes of M4.
+
 **Selection.**  Mixing products are subject to two cuts, both configurable through
 :class:`MixingConfig`:
 
