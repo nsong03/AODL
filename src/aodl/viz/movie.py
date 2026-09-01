@@ -53,7 +53,7 @@ GRID_WAISTS = 8.0
 #: Pixels along the longer side of an auto-generated :class:`~aodl.field.focal.FrameGrid`.
 GRID_LONG_SIDE = 512
 
-#: Samples along X and Z in the XZ side panel.
+#: Default samples along X and Z in the XZ side panel (see ``render_movie(xz_shape=...)``).
 XZ_NX, XZ_NZ = 224, 160
 
 #: Extra Z shown in the XZ panel beyond the light's own axial extent, in Rayleigh ranges.
@@ -299,6 +299,7 @@ def render_movie(
     fps: int = 25,
     xz_panel: bool = True,
     xz_row_y: float | None = None,
+    xz_shape: tuple[int, int] | None = None,
     spectrogram_panel: bool = False,
     dpi: int = 110,
     z_max: float | None = None,
@@ -327,6 +328,12 @@ def render_movie(
         Y row the XZ slice cuts through [m].  ``None`` (default) tracks the frame's own
         power-weighted mean spot Y, so the panel follows the tweezers instead of watching an
         empty row when the array moves along y.
+    xz_shape:
+        ``(nx, nz)`` samples of the XZ panel; ``None`` uses ``(XZ_NX, XZ_NZ)``.  The panel is
+        the one part of a frame that cannot be patched — a spot sweeps *through* focus along
+        its Z axis — so its cost is ``nx * nz`` per frequency group, and a hundred-trap scene
+        pays that a hundred times.  Trading panel resolution for frames is how a large array
+        stays inside a render budget (``examples/04``).
     spectrogram_panel:
         Draw the per-channel drive strip under the view.
     dpi:
@@ -354,9 +361,13 @@ def render_movie(
     z_max = z_max_from(table["z_lab"]) if z_max is None else float(z_max)
     rows = _rows(result, xz_row_y)
 
-    x_panel = np.linspace(grid.x0, grid.x1, XZ_NX) if xz_panel else None
+    shape = (XZ_NX, XZ_NZ) if xz_shape is None else xz_shape
+    panel_nx, panel_nz = int(shape[0]), int(shape[1])
+    if panel_nx < 2 or panel_nz < 2:
+        raise ValueError(f"xz_shape needs at least 2 samples per axis, got {xz_shape!r}")
+    x_panel = np.linspace(grid.x0, grid.x1, panel_nx) if xz_panel else None
     half = _panel_half_range(result, z_max)
-    z_panel = np.linspace(-half, half, XZ_NZ) if xz_panel else None
+    z_panel = np.linspace(-half, half, panel_nz) if xz_panel else None
     row_colors = z_color(z_panel, z_max) if z_panel is not None else None
 
     xy_peak, xz_peak = _peaks(result, grid, planes, z_max, x_panel, z_panel, rows)
@@ -398,7 +409,7 @@ def render_movie(
         if x_panel is not None and z_panel is not None and row_colors is not None:
             ax_xz = axes["xz"]
             im_xz = ax_xz.imshow(
-                np.zeros((XZ_NZ, XZ_NX, 3)),
+                np.zeros((panel_nz, panel_nx, 3)),
                 extent=(grid.x0 / um, grid.x1 / um, z_panel[0] / um, z_panel[-1] / um),
                 aspect="auto",
             )

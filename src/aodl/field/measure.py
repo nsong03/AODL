@@ -25,12 +25,10 @@ from numpy.typing import NDArray
 
 from ..params import OpticsParams
 from .focal import (
-    _NO_EDGE,
-    _UPPER,
     GROUP_TOL,
     Z_LAB_SIGN,
     TermLike,
-    _axis_edges,
+    _axis_bounds,
     _n_terms,
     group_terms,
 )
@@ -75,45 +73,71 @@ class SpotMetrics:
     df_opt: float
 
 
-def _half_line_moments(lam: float, u_edge: Float, has_edge: NDArray[np.bool_]) -> Float:
-    r"""Real moments ``M_m = int u^m e^{-lam u^2} du``, ``m = 0..4``, shape ``(5, n)``.
+def _tail_moments(lam: float, edge: Float) -> Float:
+    r"""Real tail moments ``T_m = int_edge^{+inf} u^m e^{-lam u^2} du``, ``m = 0..4``, ``(5, n)``.
 
-    Full line where ``has_edge`` is false; over ``u >= u_edge`` where it is true.  The edge
-    branch reuses the stable ``erfcx`` form of :func:`aodl.field.gaussian.gauss_moments_lower`
-    (``b = 0``, so the result is real) and the integration-by-parts recursion
+    The two infinite bounds are the two fill states that need no wavefront: ``edge = -inf``
+    returns the full-line moments (the odd ones vanish by symmetry) and ``edge = +inf``
+    returns zero, so *any* window — full aperture, one-sided or two-sided — is the difference
+    :func:`_window_moments` takes.
 
-        E_m = u0^{m-1} e^{-lam u0^2} / (2 lam) + (m - 1)/(2 lam) E_{m-2}
+    The finite branch reuses the stable ``erfcx`` form of
+    :func:`aodl.field.gaussian.gauss_moments_lower` (``b = 0``, so the result is real) and the
+    integration-by-parts recursion
+
+        T_m = u0^{m-1} e^{-lam u0^2} / (2 lam) + (m - 1)/(2 lam) T_{m-2}
 
     for the two moments beyond its ``E_2``.
     """
-    n = u_edge.size
+    n = edge.size
     full0 = np.sqrt(np.pi / lam)
     out = np.zeros((5, n), dtype=np.float64)
-    out[0] = full0
-    out[2] = full0 / (2.0 * lam)
-    out[4] = 3.0 * full0 / (4.0 * lam**2)
-    if not np.any(has_edge):
-        return out
+    unbounded = np.isneginf(edge)
+    out[0] = np.where(unbounded, full0, 0.0)
+    out[2] = np.where(unbounded, full0 / (2.0 * lam), 0.0)
+    out[4] = np.where(unbounded, 3.0 * full0 / (4.0 * lam**2), 0.0)
 
-    u0 = u_edge[has_edge]
+    finite = np.isfinite(edge)
+    if not np.any(finite):
+        return out
+    u0 = edge[finite]
     e0, e1, e2 = (np.real(m) for m in gauss_moments_lower(lam, 0.0, u0))
     g0 = np.exp(-lam * u0 * u0)
     e3 = u0**2 * g0 / (2.0 * lam) + (2.0 / (2.0 * lam)) * e1
     e4 = u0**3 * g0 / (2.0 * lam) + (3.0 / (2.0 * lam)) * e2
-    out[0, has_edge], out[1, has_edge], out[2, has_edge] = e0, e1, e2
-    out[3, has_edge], out[4, has_edge] = e3, e4
+    out[0, finite], out[1, finite], out[2, finite] = e0, e1, e2
+    out[3, finite], out[4, finite] = e3, e4
     return out
 
 
-def _pupil_power_axis(
-    alpha: NDArray[np.complex128], u0: Float, side: NDArray[np.int8], w_in: float
-) -> Float:
-    r"""``S = int |p(u)|^2 du`` per term for one axis, over the *filled* aperture.
+def _window_moments(lam: float, lo: Float, hi: Float) -> Float:
+    r"""Real moments ``M_m = int_lo^hi u^m e^{-lam u^2} du``, ``m = 0..4``, shape ``(5, n)``.
+
+    ``M_m = T_m(lo) - T_m(hi)`` (:func:`_tail_moments`) — the ``b = 0``, five-moment analogue
+    of :func:`aodl.field.gaussian.gauss_moments_window`, and it inherits that function's
+    cancellation caveat: when both bounds sit far out on the same tail the difference loses
+    relative digits, but such a window passes essentially no light and the absolute error
+    stays at roundoff on the full-aperture scale the term is compared against.
+
+    A fully filled axis is ``(-inf, +inf)`` and a one-sided fill has one infinite bound, so
+    the same expression covers every fill state (``docs/conventions.md`` §7).
+    """
+    return _tail_moments(lam, lo) - _tail_moments(lam, hi)
+
+
+def _pupil_power_axis(alpha: NDArray[np.complex128], lo: Float, hi: Float, w_in: float) -> Float:
+    r"""``S = int |p(u)|^2 du`` per term for one axis, over the *filled* aperture ``[lo, hi]``.
 
     ``p(u) = (a0 + a1 u + a2 u^2) exp(-u^2/w_in^2)`` (the pupil phases drop out of ``|p|^2``), so
     ``|p|^2 = (r0 + r1 u + r2 u^2 + r3 u^3 + r4 u^4) e^{-2u^2/w_in^2}`` with real ``r`` from the
-    Hermitian square of the amplitude polynomial.  An upper-edge window (content at
-    ``u <= u0``) is mapped onto the lower-edge case by ``u -> -u``, which flips the odd ``r``.
+    Hermitian square of the amplitude polynomial, and ``S = sum_m r_m M_m`` with the windowed
+    moments of :func:`_window_moments`.
+
+    The bounds come from :func:`aodl.field.focal._axis_bounds`, so the **two-sided** window a
+    counter-propagating pair leaves while both crystals are filling (``tau/2 <= t < tau``,
+    ``docs/conventions.md`` §7) is integrated over as such.  Integrating that case as the
+    half-line ``u >= lo`` instead would count light the second wavefront has not delivered yet
+    — a factor 2.2 on one windowed axis at ``t = 0.55 tau`` (4.9 with both axes windowed).
 
     Together with Parseval this gives the exact term power (see :func:`measure`).
     """
@@ -128,13 +152,7 @@ def _pupil_power_axis(
             np.abs(a2) ** 2,
         ]
     )
-    flip = side == _UPPER
-    r[1] = np.where(flip, -r[1], r[1])
-    r[3] = np.where(flip, -r[3], r[3])
-    edge_u = np.where(flip, -u0, u0)
-    has_edge = side != _NO_EDGE
-    moments = _half_line_moments(lam, np.where(has_edge, edge_u, 0.0), has_edge)
-    return np.einsum("mn,mn->n", r, moments)
+    return np.einsum("mn,mn->n", r, _window_moments(lam, lo, hi))
 
 
 def _term_power(terms: TermLike, optics: OpticsParams) -> Float:
@@ -146,9 +164,10 @@ def _term_power(terms: TermLike, optics: OpticsParams) -> Float:
         int |field(X)|^2 dX = (2 pi F / k) int |p(u)|^2 du = lambda F int |p|^2 du,
 
     hence ``int int |U|^2 = |c|^2 (lambda F)^2 S_x S_y`` — exact, including the amplitude
-    polynomial (acoustic irising) and a partially filled aperture, and independent of Z as
-    power conservation requires.  For an unwindowed ``alpha = (1, 0, 0)`` term this equals the
-    familiar ``peak * wx * wy * pi/2``.
+    polynomial (acoustic irising) and a partially filled aperture (one-sided or the two-sided
+    window of a filling counter-propagating pair), and independent of Z as power conservation
+    requires.  For an unwindowed ``alpha = (1, 0, 0)`` term this equals the familiar
+    ``peak * wx * wy * pi/2``.
     """
     n = _n_terms(terms)
     alpha = np.asarray(terms.alpha, dtype=np.complex128)
@@ -156,8 +175,8 @@ def _term_power(terms: TermLike, optics: OpticsParams) -> Float:
     edge = getattr(terms, "edge", None)
     s = np.ones(n, dtype=np.float64)
     for axis in range(2):
-        u0, side = _axis_edges(edge, axis, n)
-        s *= _pupil_power_axis(alpha[axis], u0, side, optics.w_in)
+        lo, hi = _axis_bounds(edge, axis, n)
+        s *= _pupil_power_axis(alpha[axis], lo, hi, optics.w_in)
     return np.abs(c) ** 2 * (optics.wavelength * optics.focal_length) ** 2 * s
 
 

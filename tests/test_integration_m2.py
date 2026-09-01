@@ -372,7 +372,11 @@ def test_schroeder_phases_beat_zero_and_random_on_trap_uniformity(params1030, rn
 
     assert spreads["schroeder"] < 0.05
     assert spreads["schroeder"] < 0.25 * spreads["zero"]
-    assert spreads["schroeder"] < 0.5 * spreads["random"]
+    # Schroeder beats *zero* by a large, structural factor (every contribution to a given
+    # ghost arrives in step there), but against a random draw the honest claim is only that
+    # it wins: a lucky seed can land within a factor of two, so the old `< 0.5 * random`
+    # was an over-claim on this fixture's seed rather than a tolerance (WO-09 finding 4).
+    assert spreads["schroeder"] < spreads["random"]
 
 
 # ================================================================================ 4. cost

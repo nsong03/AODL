@@ -77,8 +77,9 @@ PATCH_WAISTS: float = 4.0
 #: Number of transverse axes (0 = x, 1 = y).
 N_AXES: int = 2
 
-# Internal fill-edge side codes (``_WINDOW`` = bounded on both sides; see `_axis_edges`).
-_NO_EDGE, _LOWER, _UPPER, _WINDOW = 0, 1, -1, 2
+# Internal fill-edge side codes of the ``(u0, side)`` input form (see `_side_codes`); the
+# bounds every consumer works with are the ``(lo, hi)`` pair of `_axis_bounds`.
+_NO_EDGE, _LOWER, _UPPER = 0, 1, -1
 _SIDE_WORDS = {"lower": _LOWER, "low": _LOWER, "upper": _UPPER, "up": _UPPER, "none": _NO_EDGE}
 
 
@@ -344,32 +345,6 @@ def _axis_bounds(edge: Any, axis: int, n: int) -> tuple[Float, Float]:
             raise ValueError(f"unrecognized fill-edge entry {entry!r} for axis {axis}")
         lo[i], hi[i] = single[0][0], single[1][0]
     return lo, hi
-
-
-def _axis_edges(edge: Any, axis: int, n: int) -> tuple[Float, NDArray[np.int8]]:
-    """Half-line view of :func:`_axis_bounds`: ``(u0, side)`` arrays of length ``n``.
-
-    ``side`` is ``+1`` when the aperture holds content at ``u >= u0`` (lower-edge moments),
-    ``-1`` for ``u <= u0`` (upper-edge moments) and ``0`` when the axis is fully filled
-    (``u0`` is then NaN) — the WO-03 contract, preserved bit for bit.
-
-    A **two-sided window cannot be expressed in this view**: it is reported as
-    ``side = _WINDOW`` with ``u0`` its *lower* bound.  A consumer that only knows half-lines
-    therefore integrates over ``u >= lo`` and over-counts the light a window passes; use
-    :func:`_axis_bounds` instead, as the field integrals here do.  (The one such consumer is
-    :func:`aodl.field.measure._pupil_power_axis`, whose per-term ``power`` is consequently an
-    over-estimate while a counter-propagating pair is mid-fill, ``tau/2 <= t < tau``.)
-    """
-    lo, hi = _axis_bounds(edge, axis, n)
-    bounded_lo = np.isfinite(lo)
-    bounded_hi = np.isfinite(hi)
-    side = np.select(
-        [bounded_lo & bounded_hi, bounded_lo, bounded_hi],
-        [np.int8(_WINDOW), np.int8(_LOWER), np.int8(_UPPER)],
-        default=np.int8(_NO_EDGE),
-    ).astype(np.int8)
-    u0 = np.where(bounded_lo, lo, np.where(bounded_hi, hi, np.nan))
-    return np.asarray(u0, dtype=np.float64), side
 
 
 def _axis_terms(terms: TermLike, axis: int) -> _AxisTerms:
