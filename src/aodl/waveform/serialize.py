@@ -20,16 +20,28 @@ from numpy.typing import NDArray
 
 from ..params import CHANNELS, AODLParams, AODParams, OpticsParams
 from ..poly import MAX_DEGREE, PiecewisePoly
+from .shepard import FadeZoneEnvelope
 from .tones import ChannelWaveform, ConstantEnvelope, Envelope, SmoothOnOff, ToneTrack, WaveformSet
 
-#: On-disk schema version written into the ``meta`` JSON.
+#: Baseline on-disk schema version, written into the ``meta`` JSON for any file the v1
+#: layout can express.
 SCHEMA_VERSION = 1
+
+#: Schema version written when at least one tone carries a fading-Shepard envelope
+#: (:class:`~aodl.waveform.shepard.FadeZoneEnvelope`).  v2 is purely **additive**: the v1
+#: arrays are unchanged and one ``<ch>_env_polys`` table per affected channel is added, so a
+#: file only claims v2 when it actually needs the new table.  See ``docs/waveform_format.md``.
+SCHEMA_VERSION_FADE = 2
+
+#: Schema versions this build can read.
+SUPPORTED_SCHEMA_VERSIONS: tuple[int, ...] = (SCHEMA_VERSION, SCHEMA_VERSION_FADE)
 
 #: ``mixing_order`` assumed for a v1 file whose params block predates that key (the package
 #: default at the time such a file could have been written).  See :func:`params_from_dict`.
 LEGACY_MIXING_ORDER = 1
 
-#: ``<ch>_segments`` row layout: ``tone_idx, t0, T, degree, c0..c9``.
+#: ``<ch>_segments`` row layout: ``tone_idx, t0, T, degree, c0..c9``.  Shared verbatim by the
+#: v2 ``<ch>_env_polys`` table, whose rows are the fade coordinate ``g(t)`` of one tone.
 SEGMENT_COLUMNS = 4 + MAX_DEGREE + 1
 
 #: ``<ch>_tones`` row layout: ``tone_idx, phase0, env_kind, env_p0..env_p3``.
@@ -38,6 +50,7 @@ TONE_COLUMNS = 3 + 4
 #: Envelope discriminators stored in the ``env_kind`` column.
 ENV_CONSTANT = 0
 ENV_SMOOTH_ON_OFF = 1
+ENV_FADE_ZONE = 2
 
 _ENV_PARAMS = 4
 
@@ -45,28 +58,59 @@ _ENV_PARAMS = 4
 # ------------------------------------------------------------------ envelope codec
 
 
-def _encode_env(env: Envelope) -> tuple[int, list[float]]:
-    """``Envelope -> (env_kind, [p0, p1, p2, p3])``."""
+def _encode_env(env: Envelope) -> tuple[int, list[float], PiecewisePoly | None]:
+    """``Envelope -> (env_kind, [p0, p1, p2, p3], g-poly or None)``.
+
+    Only :class:`~aodl.waveform.shepard.FadeZoneEnvelope` returns a polynomial: its fade
+    coordinate ``g(t) = f_Z(t) + (n + xi) delta_f`` is a piecewise polynomial like any
+    frequency law and goes into the channel's ``<ch>_env_polys`` table (schema v2), which is
+    also where the rung index and ``xi`` live — inside ``g``'s constant term.
+    """
     if isinstance(env, ConstantEnvelope):
-        return ENV_CONSTANT, [env.amp, 0.0, 0.0, 0.0]
+        return ENV_CONSTANT, [env.amp, 0.0, 0.0, 0.0], None
     if isinstance(env, SmoothOnOff):
-        return ENV_SMOOTH_ON_OFF, [env.t_on, env.t_off, env.ramp, 0.0]
+        return ENV_SMOOTH_ON_OFF, [env.t_on, env.t_off, env.ramp, 0.0], None
+    if isinstance(env, FadeZoneEnvelope):
+        if env.amp != 1.0:
+            raise ValueError(
+                f"cannot serialize a FadeZoneEnvelope with amp={env.amp!r}: schema "
+                f"v{SCHEMA_VERSION_FADE}'s four env parameter slots are "
+                f"(delta_f, eta, p, M) and carry no room for a peak amplitude.  Synthesize "
+                f"with amp=1.0 (the drive's absolute scale belongs to the AWG export anyway, "
+                f"see waveform/export.py) if the waveform has to round-trip through a file."
+            )
+        return ENV_FADE_ZONE, [env.delta_f, env.eta, env.p, float(env.m)], env.g
     raise TypeError(
-        f"cannot serialize envelope of type {type(env).__name__!r}: schema v{SCHEMA_VERSION} "
-        f"knows ConstantEnvelope (env_kind={ENV_CONSTANT}) and "
-        f"SmoothOnOff (env_kind={ENV_SMOOTH_ON_OFF})"
+        f"cannot serialize envelope of type {type(env).__name__!r}: schema "
+        f"v{SCHEMA_VERSION_FADE} knows ConstantEnvelope (env_kind={ENV_CONSTANT}), "
+        f"SmoothOnOff (env_kind={ENV_SMOOTH_ON_OFF}) and "
+        f"FadeZoneEnvelope (env_kind={ENV_FADE_ZONE})"
     )
 
 
-def _decode_env(kind: int, params: NDArray[np.float64]) -> Envelope:
-    """``(env_kind, [p0..p3]) -> Envelope``."""
+def _decode_env(kind: int, params: NDArray[np.float64], g: PiecewisePoly | None) -> Envelope:
+    """``(env_kind, [p0..p3], g-poly) -> Envelope``."""
     if kind == ENV_CONSTANT:
         return ConstantEnvelope(amp=float(params[0]))
     if kind == ENV_SMOOTH_ON_OFF:
         return SmoothOnOff(t_on=float(params[0]), t_off=float(params[1]), ramp=float(params[2]))
+    if kind == ENV_FADE_ZONE:
+        if g is None:
+            raise ValueError(
+                f"env_kind {ENV_FADE_ZONE} (fade_zone) needs the tone's fade coordinate, but no "
+                f"matching '<ch>_env_polys' rows were found; the file is incomplete"
+            )
+        return FadeZoneEnvelope(
+            g=g,
+            delta_f=float(params[0]),
+            eta=float(params[1]),
+            p=float(params[2]),
+            m=int(round(float(params[3]))),
+        )
     raise ValueError(
-        f"unknown env_kind {kind!r}: schema v{SCHEMA_VERSION} defines "
-        f"{ENV_CONSTANT} (constant) and {ENV_SMOOTH_ON_OFF} (smooth_on_off)"
+        f"unknown env_kind {kind!r}: schema v{SCHEMA_VERSION_FADE} defines "
+        f"{ENV_CONSTANT} (constant), {ENV_SMOOTH_ON_OFF} (smooth_on_off) and "
+        f"{ENV_FADE_ZONE} (fade_zone)"
     )
 
 
@@ -124,45 +168,64 @@ def params_from_dict(data: dict[str, Any]) -> AODLParams:
 # --------------------------------------------------------------------------- save
 
 
-def _channel_arrays(cw: ChannelWaveform) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+def _poly_rows(poly: PiecewisePoly, tone_idx: int) -> list[NDArray[np.float64]]:
+    """One ``tone_idx, t0, T, degree, c0..c9`` row per segment of ``poly``, in time order."""
+    widths = np.diff(poly.breaks)
+    width = poly.coeffs.shape[1]
+    rows: list[NDArray[np.float64]] = []
+    for k in range(poly.n_segments):
+        row = np.zeros(SEGMENT_COLUMNS, dtype=np.float64)
+        row[0] = tone_idx
+        row[1] = poly.breaks[k]
+        row[2] = widths[k]
+        row[3] = poly.degree
+        row[4 : 4 + width] = poly.coeffs[k]
+        rows.append(row)
+    return rows
+
+
+def _channel_arrays(
+    cw: ChannelWaveform,
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+    """``(<ch>_segments, <ch>_tones, <ch>_env_polys)``; the last is empty without fades."""
     segments: list[NDArray[np.float64]] = []
     tone_rows: list[NDArray[np.float64]] = []
+    env_segments: list[NDArray[np.float64]] = []
     for tone_idx, tone in enumerate(cw.tones):
-        poly = tone.freq
-        widths = np.diff(poly.breaks)
-        width = poly.coeffs.shape[1]
-        for k in range(poly.n_segments):
-            row = np.zeros(SEGMENT_COLUMNS, dtype=np.float64)
-            row[0] = tone_idx
-            row[1] = poly.breaks[k]
-            row[2] = widths[k]
-            row[3] = poly.degree
-            row[4 : 4 + width] = poly.coeffs[k]
-            segments.append(row)
-        kind, env_params = _encode_env(tone.env)
+        segments.extend(_poly_rows(tone.freq, tone_idx))
+        kind, env_params, env_poly = _encode_env(tone.env)
+        if env_poly is not None:
+            env_segments.extend(_poly_rows(env_poly, tone_idx))
         tone_rows.append(
             np.array([tone_idx, tone.phase0, float(kind), *env_params], dtype=np.float64)
         )
     seg = np.array(segments, dtype=np.float64).reshape(-1, SEGMENT_COLUMNS)
     ton = np.array(tone_rows, dtype=np.float64).reshape(-1, TONE_COLUMNS)
-    return seg, ton
+    env = np.array(env_segments, dtype=np.float64).reshape(-1, SEGMENT_COLUMNS)
+    return seg, ton, env
 
 
 def save(wfs: WaveformSet, path: str | Path) -> Path:
     """Write ``wfs`` to a parametric NPZ and return the path actually written.
 
     The file holds one ``meta`` JSON string plus, per driven channel, a ``<ch>_segments``
-    and a ``<ch>_tones`` float64 table.  No samples: rendering is
+    and a ``<ch>_tones`` float64 table — and, for a channel carrying fading-Shepard
+    envelopes, a ``<ch>_env_polys`` table with their fade coordinates (schema
+    v:data:`SCHEMA_VERSION_FADE`).  No samples: rendering is
     :func:`aodl.waveform.export.render_samples`.
     """
     path = Path(path)
     arrays: dict[str, Any] = {}
+    version = SCHEMA_VERSION
     for name, cw in wfs.channels.items():
-        seg, ton = _channel_arrays(cw)
+        seg, ton, env = _channel_arrays(cw)
         arrays[f"{name}_segments"] = seg
         arrays[f"{name}_tones"] = ton
+        if env.shape[0]:
+            arrays[f"{name}_env_polys"] = env
+            version = SCHEMA_VERSION_FADE
     meta = {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": version,
         "description": wfs.description,
         "params": params_to_dict(wfs.params),
         "channels": list(wfs.channels),
@@ -194,7 +257,10 @@ def _poly_from_rows(rows: NDArray[np.float64], where: str) -> PiecewisePoly:
 
 
 def _channel_from_arrays(
-    name: str, seg: NDArray[np.float64], ton: NDArray[np.float64]
+    name: str,
+    seg: NDArray[np.float64],
+    ton: NDArray[np.float64],
+    env_seg: NDArray[np.float64] | None = None,
 ) -> ChannelWaveform:
     if seg.ndim != 2 or seg.shape[1] != SEGMENT_COLUMNS:
         raise ValueError(
@@ -202,12 +268,21 @@ def _channel_from_arrays(
         )
     if ton.ndim != 2 or ton.shape[1] != TONE_COLUMNS:
         raise ValueError(f"{name}_tones must have {TONE_COLUMNS} columns, got shape {ton.shape}")
+    if env_seg is not None and (env_seg.ndim != 2 or env_seg.shape[1] != SEGMENT_COLUMNS):
+        raise ValueError(
+            f"{name}_env_polys must have {SEGMENT_COLUMNS} columns, got shape {env_seg.shape}"
+        )
     tones: list[ToneTrack] = []
     for row in ton:
         tone_idx = int(row[0])
         rows = seg[seg[:, 0].astype(int) == tone_idx]
         poly = _poly_from_rows(rows, f"{name} tone {tone_idx}")
-        env = _decode_env(int(row[2]), row[3 : 3 + _ENV_PARAMS])
+        env_poly = None
+        if env_seg is not None:
+            env_rows = env_seg[env_seg[:, 0].astype(int) == tone_idx]
+            if env_rows.shape[0]:
+                env_poly = _poly_from_rows(env_rows, f"{name} tone {tone_idx} envelope")
+        env = _decode_env(int(row[2]), row[3 : 3 + _ENV_PARAMS], env_poly)
         tones.append(ToneTrack(freq=poly, env=env, phase0=float(row[1])))
     return ChannelWaveform(tuple(tones))
 
@@ -224,10 +299,10 @@ def load(path: str | Path) -> WaveformSet:
             raise ValueError(f"{path}: not an AODL waveform file (no 'meta' entry)")
         meta = json.loads(str(data["meta"].item()))
         version = meta.get("schema_version")
-        if version != SCHEMA_VERSION:
+        if version not in SUPPORTED_SCHEMA_VERSIONS:
             raise ValueError(
                 f"{path}: unsupported schema_version {version!r}; "
-                f"this build reads version {SCHEMA_VERSION}"
+                f"this build reads version(s) {list(SUPPORTED_SCHEMA_VERSIONS)}"
             )
         names = list(meta.get("channels", []))
         unknown = [n for n in names if n not in CHANNELS]
@@ -240,7 +315,9 @@ def load(path: str | Path) -> WaveformSet:
                 ton = np.asarray(data[f"{name}_tones"], dtype=np.float64)
             except KeyError as exc:
                 raise ValueError(f"{path}: missing array {exc} for channel {name!r}") from exc
-            channels[name] = _channel_from_arrays(name, seg, ton)
+            key = f"{name}_env_polys"
+            env_seg = np.asarray(data[key], dtype=np.float64) if key in data else None
+            channels[name] = _channel_from_arrays(name, seg, ton, env_seg)
     return WaveformSet(
         channels=channels,
         params=params_from_dict(meta["params"]),
@@ -250,10 +327,13 @@ def load(path: str | Path) -> WaveformSet:
 
 __all__ = [
     "ENV_CONSTANT",
+    "ENV_FADE_ZONE",
     "ENV_SMOOTH_ON_OFF",
     "LEGACY_MIXING_ORDER",
     "SCHEMA_VERSION",
+    "SCHEMA_VERSION_FADE",
     "SEGMENT_COLUMNS",
+    "SUPPORTED_SCHEMA_VERSIONS",
     "TONE_COLUMNS",
     "load",
     "params_from_dict",

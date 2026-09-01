@@ -1,8 +1,13 @@
-# AODL waveform file format — schema v1
+# AODL waveform file format — schema v1 and v2
 
 A `.npz` written by `aodl.waveform.serialize.save` (or `WaveformSet.save`) contains the
 **parametric function representation** of a waveform set: segment breakpoints, polynomial
 coefficients, envelope parameters, tone phases and a hardware snapshot.
+
+> **v2 is purely additive.** It adds one optional table per channel — `<ch>_env_polys`,
+> §3.1 — and one envelope kind — `env_kind = 2`, the fading-Shepard window of Eqs. S26/S27
+> (§4). Everything else is byte-for-byte v1, a file claims `schema_version: 2` **only**
+> when it actually carries a fade envelope, and this build reads both versions.
 
 > **It never contains samples.** Samples are a render target, produced on demand by
 > `aodl.waveform.export.render_samples(wfs, sample_rate)` and — if they must be written to
@@ -21,6 +26,7 @@ coefficients, envelope parameters, tone phases and a hardware snapshot.
 | `meta` | `<U…` (0-d) | — | JSON string, §2 |
 | `<ch>_segments` | `float64` | `(n_rows, 14)` | one row per *(tone, polynomial segment)*, §3 |
 | `<ch>_tones` | `float64` | `(n_tones, 7)` | one row per tone, §4 |
+| `<ch>_env_polys` | `float64` | `(n_rows, 14)` | v2 only, and only for channels with fade envelopes: one row per *(tone, fade-coordinate segment)*, §3.1 |
 
 `<ch>` runs over the driven channels only (`meta["channels"]`), each a member of
 `aodl.params.CHANNELS = ("Ax", "Bx", "Ay", "By")`. An undriven channel simply has no
@@ -51,8 +57,10 @@ Hz, versus time in seconds. The carrier is re-added only by `render_samples`.
   four channels, whether driven or not — so a loaded file needs no external context.
   JSON round-trips float64 exactly (shortest repr), so `loaded.params == original.params`.
 - `channels` lists the driven channels, in the order their arrays should be read.
-- A `schema_version` this build does not know raises `ValueError` on load rather than
-  guessing.
+- `schema_version` is **1** unless some tone carries a `FadeZoneEnvelope`, in which case it
+  is **2** (`aodl.waveform.serialize.SCHEMA_VERSION` / `SCHEMA_VERSION_FADE`;
+  `SUPPORTED_SCHEMA_VERSIONS` is what a build reads). A version this build does not know
+  raises `ValueError` on load rather than guessing.
 - Keys may be *added* to a channel's params block without bumping `schema_version`; a
   reader supplies its documented default for a key an older file lacks. So far that is
   `mixing_order` (added with M2, default **1** when absent — the package default at the
@@ -85,6 +93,21 @@ the tone keeps its terminal frequency, but its *phase* stops advancing. Use
 stay coherent past its last ramp — that is also how all tones in a set are made to cover
 the same span, which `WaveformSet` requires.
 
+### 3.1 `<ch>_env_polys` — fade coordinates (schema v2)
+
+Same 14-column layout as `<ch>_segments`, and read the same way — but the polynomial is the
+**fade coordinate** `g(t)` of an `env_kind = 2` tone rather than its frequency law:
+
+```
+g(t) = f_Z(t) + (n + ξ) Δf        [Hz]        (Eq. S25's f_{µ,Z}^(n))
+```
+
+i.e. the tone's frequency *minus* its lateral term. Rows are keyed by `tone_idx` in
+column 0, exactly as in `<ch>_segments`, and only tones with a fade envelope have any.
+**The rung index `n` and the interlacing offset `ξ` are not stored separately** — they are
+inside `g`'s constant term, which is all the envelope ever needs (`aodl.waveform.shepard`).
+A channel with no fade envelope has no `<ch>_env_polys` entry at all.
+
 ## 4. `<ch>_tones` — phases and envelopes
 
 One row per tone:
@@ -101,10 +124,11 @@ phase(t) = 2*pi * ∫ f dt' + phase0        [rad, rotating frame]
 
 Schroeder phases for tone ladders (Eq. S23/S28) live in this column.
 
-| `env_kind` | envelope | parameters |
-|-----------|----------|------------|
-| `0` | `ConstantEnvelope` | `p0 = amp` (in `[0, 1]`) |
-| `1` | `SmoothOnOff` | `p0 = t_on`, `p1 = t_off`, `p2 = ramp` [s] |
+| `env_kind` | envelope | parameters | schema |
+|-----------|----------|------------|--------|
+| `0` | `ConstantEnvelope` | `p0 = amp` (in `[0, 1]`) | v1 |
+| `1` | `SmoothOnOff` | `p0 = t_on`, `p1 = t_off`, `p2 = ramp` [s] | v1 |
+| `2` | `FadeZoneEnvelope` | `p0 = Δf` [Hz], `p1 = η`, `p2 = p`, `p3 = M` | v2 |
 
 Unused parameter columns are zero. An `env_kind` this build does not know raises
 `ValueError` on load; an envelope class the schema cannot represent raises `TypeError` on
@@ -112,7 +136,22 @@ save. `SmoothOnOff` is off before `t_on`, rises as `sin²(π (t − t_on) / (2 r
 `ramp`, holds at 1, falls symmetrically to zero at `t_off`, and is off after; it requires
 `t_off − t_on ≥ 2 ramp`.
 
-## 5. Worked example
+`FadeZoneEnvelope` (`env_kind = 2`) is the fading-Shepard window of Eqs. S26/S27 evaluated
+at the tone's `g(t)` from `<ch>_env_polys` (§3.1):
+
+```
+A = 1                for |g| ≤ (M − η) Δf / 2
+A = cosᵖ θ,  θ = (π / 2η)(|g| / Δf − M / 2) + π/4     in between
+A = 0                for |g| ≥ (M + η) Δf / 2
+```
+
+so the four stored numbers plus `g` reconstruct it exactly. Presence of *any* such tone is
+what makes the file `schema_version: 2`. A fade envelope whose peak amplitude is not 1 has
+nowhere to put that number — the four slots are spoken for — and `save` refuses it with a
+`ValueError` rather than dropping it silently; scale the drive at export time instead
+(§6, `normalization`).
+
+## 5. Worked example — schema v1
 
 ```python
 from aodl.params import default_1030
@@ -157,6 +196,58 @@ Reading the first row: tone 0 has a single quintic segment on `[0, 100 µs]` wit
 back = WaveformSet.load("demo.npz")
 back.channels["Bx"].tones[1].freq.coeffs   # float-identical to the original
 ```
+
+## 5.1 Worked example — schema v2 (fading Shepard)
+
+```python
+from aodl.params import default_1030
+from aodl.trajectory.spec import ArraySpec, Lift, TrajectorySpec, Translate
+from aodl.units import MHz, um, us
+from aodl.waveform.shepard import ShepardConfig
+from aodl.waveform.synthesis import synthesize
+
+spec = TrajectorySpec(
+    array=ArraySpec(1, 1),
+    moves=(Lift(10 * um, 60 * us), Translate(20 * um, 0.0, 60 * us), Lift(-10 * um, 60 * us)),
+)
+wfs = synthesize(spec, default_1030(), shepard=ShepardConfig(12 * MHz, 12 * MHz), t_pad=0.0)
+wfs.save("shepard.npz")          # 13 kB, schema_version 2
+```
+
+Two rungs are live on each channel over this run, so `Ax_tones` is
+
+```
+tone phase0  kind  p0=Δf   p1=η   p2=p   p3=M
+[ 0,  0,      2,    1.2e7,  0.5,   0.5,   1  ]     # Eq. S26 window, single-tweezer row
+[ 1,  0,      2,    1.2e7,  0.5,   0.5,   1  ]
+```
+
+— `env_kind = 2` with paper Table II's single-tweezer `(M, p) = (1, ½)`, and `phase0 = 0`
+because Eq. S28 puts the Schroeder progression on the `B` ladders only. The two tables of
+polynomials differ exactly where the trajectory moves *laterally*:
+
+```
+Ax_segments (frequency law f = f_lat + f_Z + (n + ξ) Δf, tone 0, three 60 µs segments)
+  tone t0       T       deg  c0         c1        c2  c3         c4        c5
+  [ 0,  0,      6e-05,   6,  -1.2000e7,  0,       0,   0,        7.282e6, -8.738e6, 2.913e6, …]
+  [ 0,  6e-05,  6e-05,   6,  -1.0544e7,  2.913e6, 0,  -9.709e6,  1.456e7, -5.825e6, 0, …]
+  [ 0,  1.2e-4, 6e-05,   6,  -8.6019e6,  2.913e6, 0,   0,       -7.282e6,  8.738e6, -2.913e6, …]
+
+Ax_env_polys (fade coordinate g = f_Z + (n + ξ) Δf, same tone, same breakpoints)
+  [ 0,  0,      6e-05,   6,  -1.2000e7,  0,       0,   0,        7.282e6, -8.738e6, 2.913e6, …]
+  [ 0,  6e-05,  6e-05,   6,  -1.0544e7,  2.913e6, 0,   0,        0,        0,        0, …]
+  [ 0,  1.2e-4, 6e-05,   6,  -7.6311e6,  2.913e6, 0,   0,       -7.282e6,  8.738e6, -2.913e6, …]
+```
+
+The first and third segments are the two lifts, where `X` is held and the two polynomials
+agree; the middle one is the translate, where the frequency law picks up the min-jerk
+lateral term `−v X(t) / (2 λ F)` (the `c3 … c5` block, and a different `c0`) while `g`
+stays the plain `f_Z` ramp. That is the whole reason `g` is stored rather than recomputed:
+**a lateral move must not shift the fade schedule.**
+
+`c0` of the first row is the rung offset: `−1.2e7 = (n + ξ) Δf` with `n = −1`, `ξ = 0`. The
+`Ay`/`By` ladders of the same file carry `∓6e6 = (n + ½) Δf`, which is the interlacing
+offset of Table II — visible nowhere else in the file.
 
 ## 6. Rendered samples — a different file
 

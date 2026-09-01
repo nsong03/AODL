@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from dataclasses import replace
 
 import numpy as np
 from numpy.polynomial import polynomial as npoly
@@ -49,7 +50,16 @@ from ..params import CHANNELS, AODLParams
 from ..poly import PiecewisePoly
 from ..trajectory.spec import TrajectorySpec
 from ..units import MHz, ms, um, us
-from .tones import ChannelWaveform, ConstantEnvelope, ToneTrack, WaveformSet
+from .shepard import (
+    ChannelFade,
+    ShepardConfig,
+    auto_config,
+    ladder_phases,
+    poly_range,
+    shepard_band_bound,
+    shepard_ladder,
+)
+from .tones import TIME_TOL, ChannelWaveform, ConstantEnvelope, ToneTrack, WaveformSet
 
 #: Default programmed span of :func:`array_tones` [s] when no ``t1`` is given.  A static
 #: ladder has nothing to schedule, so the span exists only to satisfy the
@@ -93,6 +103,10 @@ def schroeder_phases(n_tones: int) -> NDArray[np.float64]:
     module cares — the IM3 contributions to any one ghost line arrive with scattered phases
     instead of adding coherently (``docs/PLAN.md`` §1.2).
 
+    This is :func:`aodl.waveform.shepard.ladder_phases` — the one implementation of Eq. S28
+    in the package — evaluated on the ``M`` rungs ``n = 0 … M-1`` of a *counted* ladder; the
+    Shepard ladders of M4 call it on their own (signed) rung indices instead.
+
     Returns
     -------
     ``(M,)`` array of phases in ``[0, 2 pi)``; ``M = 0`` gives an empty array.
@@ -102,8 +116,7 @@ def schroeder_phases(n_tones: int) -> NDArray[np.float64]:
         raise ValueError(f"n_tones must be non-negative, got {n_tones!r}")
     if count == 0:
         return np.zeros(0, dtype=np.float64)
-    n = np.arange(count, dtype=np.float64)
-    return np.mod(_TWO_PI * n * (n - 1.0) / (2.0 * count), _TWO_PI)
+    return ladder_phases(np.arange(count, dtype=np.int64), count)
 
 
 def _resolve_phases(
@@ -398,6 +411,193 @@ def _phase_argument(
     return phases
 
 
+def _padded(p: PiecewisePoly, t_end: float) -> PiecewisePoly:
+    """``p`` held at its terminal value out to ``t_end`` — the ``t_pad`` tail as a polynomial.
+
+    The M3 path gets its tail from :meth:`~aodl.waveform.tones.ChannelWaveform.
+    with_hold_until`, which appends a constant *frequency* segment per tone.  A Shepard tone
+    also carries an envelope built on ``f_Z``, and an envelope must be defined wherever its
+    tone is, so the tail is applied to the underlying polynomials instead — before either the
+    frequency law or the fade coordinate is derived from them.  Same semantics: the drive
+    freezes, so the array sits at rest with ``Zbar = 0`` through the tail.
+    """
+    _, t1 = p.domain
+    if t_end <= t1 + TIME_TOL:
+        return p
+    return PiecewisePoly.concat([p, PiecewisePoly.constant(float(p(t1)), t1, float(t_end))])
+
+
+def _lateral_terms(x: PiecewisePoly, y: PiecewisePoly, params: AODLParams) -> dict[str, float]:
+    """Eq. S19's ``-+ v P(t) / (2 lambda F)`` scale — half the lateral drive per pair member."""
+    optics = params.optics
+    half = 0.5 * params.sound_speed / (optics.wavelength * optics.focal_length)
+    return {"Ax": -half, "Bx": half, "Ay": -half, "By": half}
+
+
+def _shepard_band_message(
+    name: str,
+    aod_band: tuple[float, float],
+    f_center: float,
+    bound: float,
+    window: float,
+    lateral: float,
+    delta_f: float,
+    fade: ChannelFade,
+    eta: float,
+) -> str:
+    """The band-violation report of the *bounded* fading-Shepard excursion."""
+    lo, hi = aod_band
+    excess = max(lo - (f_center - bound), (f_center + bound) - hi)
+    return (
+        f"channel {name!r} leaves its usable band even with fading-Shepard tones: its live "
+        f"rungs span [{(f_center - bound) / MHz:.4f}, {(f_center + bound) / MHz:.4f}] MHz, "
+        f"outside the limit [{lo / MHz:.4f}, {hi / MHz:.4f}] MHz by {excess / MHz:.4f} MHz.  "
+        f"Unlike Eq. S19 this bound does not grow with the hold (Eqs. S24-S28: the ladder "
+        f"slides, the live window does not) — it is the fade window "
+        f"(M + eta) delta_f / 2 = ({fade.m} + {eta:g}) x {delta_f / MHz:.4f} MHz / 2 = "
+        f"{window / MHz:.4f} MHz plus the lateral term's {lateral / MHz:.4f} MHz.  Narrow the "
+        f"ladder (delta_f), shrink the array (M), reduce the lateral excursion, or widen the "
+        f"band; pass check_band=False to synthesize it anyway for plotting."
+    )
+
+
+def _check_shepard_bands(
+    cfg: ShepardConfig,
+    fades: Mapping[str, ChannelFade],
+    lateral: Mapping[str, PiecewisePoly],
+    params: AODLParams,
+) -> None:
+    """Raise unless every channel's *live* tones stay in band (the Shepard claim, S24-S28).
+
+    Eq. 1 does not apply here: ``f_Z`` is deliberately unbounded and the tones that carry it
+    out of band are switched off before they get there.  What must fit is
+    :func:`aodl.waveform.shepard.shepard_band_bound`, which the whole run obeys however long
+    the axial hold lasts.
+    """
+    for name in CHANNELS:
+        aod = params.channels[name]
+        lo, hi = aod.band
+        span = max(abs(value) for value in poly_range(lateral[name]))
+        delta_f = cfg.spacing(name)
+        window = 0.5 * (fades[name].m + cfg.eta) * delta_f
+        bound = shepard_band_bound(fades[name], delta_f, cfg.eta, span)
+        if aod.f_center - bound < lo - BAND_TOL or aod.f_center + bound > hi + BAND_TOL:
+            raise ValueError(
+                _shepard_band_message(
+                    name, (lo, hi), aod.f_center, bound, window, span, delta_f, fades[name], cfg.eta
+                )
+            )
+
+
+def _synthesize_shepard(
+    spec: TrajectorySpec,
+    params: AODLParams,
+    cfg: ShepardConfig,
+    xyz: tuple[PiecewisePoly, PiecewisePoly, PiecewisePoly],
+    t_end: float,
+    *,
+    amp: float,
+    phases: str | ArrayLike | Mapping[str, str | ArrayLike],
+    rng: np.random.Generator | None,
+    check_band: bool,
+    note: str,
+) -> WaveformSet:
+    """Build the four fading-Shepard ladders (Eqs. S24-S28).  See :func:`synthesize`."""
+    x, y, z = xyz
+    scales = _lateral_terms(x, y, params)
+    f_z = _padded(f_z_ramp(z, params), t_end)
+    lateral = {
+        name: _padded((x if name.endswith("x") else y).scale(scale), t_end)
+        for name, scale in scales.items()
+    }
+    fades = cfg.resolve(spec.array)
+    if check_band:
+        _check_shepard_bands(cfg, fades, lateral, params)
+
+    channels: dict[str, ChannelWaveform] = {}
+    for name in CHANNELS:
+        # Eq. S28 puts the Schroeder progression on the B ladders; the A ladders take zero.
+        tone_phases = _phase_argument(phases, name) if name.startswith("B") else "zero"
+        channels[name] = shepard_ladder(
+            fades[name],
+            cfg.spacing(name),
+            lateral[name],
+            f_z,
+            eta=cfg.eta,
+            amp=amp,
+            phases=tone_phases,
+            rng=rng,
+        )
+    counts = ", ".join(f"{name}:{channels[name].n_tones}" for name in CHANNELS)
+    array = spec.array
+    return WaveformSet(
+        channels=channels,
+        params=params,
+        description=(
+            f"Fading-Shepard synthesis (Eqs. S24-S28): {array.mx}x{array.my} array, "
+            f"{len(spec.moves)} move(s), T = {spec.duration / us:.4g} us + "
+            f"{(t_end - spec.duration) / us:.4g} us hold; "
+            f"delta_f = ({cfg.delta_f_x / MHz:.4g}, {cfg.delta_f_y / MHz:.4g}) MHz, "
+            f"eta = {cfg.eta:g}; rungs {counts}{note}"
+        ),
+    )
+
+
+def _synthesize_s19(
+    spec: TrajectorySpec,
+    params: AODLParams,
+    xyz: tuple[PiecewisePoly, PiecewisePoly, PiecewisePoly],
+    t_end: float,
+    *,
+    amp: float,
+    phases: str | ArrayLike | Mapping[str, str | ArrayLike],
+    rng: np.random.Generator | None,
+    check_band: bool,
+    note: str = "",
+) -> WaveformSet:
+    """Build the plain Eq. S19 drive (one tone per A channel, the array ladder on B)."""
+    x, y, z = xyz
+    duration = spec.duration
+    scales = _lateral_terms(x, y, params)
+    f_z = f_z_ramp(z, params)
+    array = spec.array
+    ladders = {"Bx": (array.mx, array.delta_f_x), "By": (array.my, array.delta_f_y)}
+    common = {
+        name: (x if name.endswith("x") else y).scale(scale) + f_z for name, scale in scales.items()
+    }
+
+    channels: dict[str, ChannelWaveform] = {}
+    for name in CHANNELS:
+        n_tones, delta_f = ladders.get(name, (1, 0.0))
+        # A single-tone channel's phase is a global factor over every Eq. S7 term, so the A
+        # channels take 0 rather than consuming the caller's ladder phases.
+        tone_phases = _phase_argument(phases, name) if name in ladders else (0.0,)
+        ladder = array_tones(
+            n_tones, delta_f, amp=amp, phases=tone_phases, t0=0.0, t1=duration, rng=rng
+        )
+        channels[name] = add_common_ramp(ladder, common[name])
+
+    wfs = WaveformSet(
+        channels=channels,
+        params=params,
+        description=(
+            f"Eq. S19 synthesis: {array.mx}x{array.my} array, {len(spec.moves)} move(s), "
+            f"T = {duration / us:.4g} us + {(t_end - duration) / us:.4g} us hold{note}"
+        ),
+    )
+    if t_end > duration:
+        wfs = wfs.with_hold_until(t_end)
+    if check_band:
+        _check_bands(wfs, _requested_z_integral(f_z, params))
+    return wfs
+
+
+def _requested_z_integral(f_z: PiecewisePoly, params: AODLParams) -> float:
+    """``max |int Z dt|`` [m.s] the trajectory asks for — the Eq. 1 quantity."""
+    lo, hi = poly_range(f_z)
+    return 2.0 * params.lens_scale * max(abs(lo), abs(hi))
+
+
 def synthesize(
     spec: TrajectorySpec,
     params: AODLParams,
@@ -407,6 +607,7 @@ def synthesize(
     t_pad: float | None = None,
     rng: np.random.Generator | None = None,
     check_band: bool = True,
+    shepard: str | ShepardConfig | None = None,
 ) -> WaveformSet:
     r"""Compile a trajectory into the four AODL channel drives.  **Eq. S19.**
 
@@ -459,12 +660,27 @@ def synthesize(
         Verify that ``f_center + f(t)`` stays inside every channel's band (Eq. 1) and raise
         :class:`ValueError` naming the excursion, the limit and the feasible ``|int Z dt|``
         otherwise.  ``False`` skips the check — **for plotting infeasible drives only**; the
-        hardware would simply not diffract there.
+        hardware would simply not diffract there.  Under ``shepard`` the quantity checked is
+        the *bounded* live-tone excursion instead (:func:`_check_shepard_bands`).
+    shepard:
+        Fading-Shepard tone ladders (Eqs. S24-S28, :mod:`aodl.waveform.shepard`), which trade
+        Eq. 1's one-sided budget for a bounded excursion and hold ``Z`` indefinitely:
+
+        * ``None`` (default) — plain Eq. S19, refused by the band check when the hold is too
+          long;
+        * ``"auto"`` — run the Eq. 1 band check first and switch to fading-Shepard *only* if
+          it fails, choosing ladder spacings with
+          :func:`aodl.waveform.shepard.auto_config`.  Which path was taken is stated in
+          :attr:`~aodl.waveform.tones.WaveformSet.description` (the decision is made even
+          when ``check_band=False``, which then only skips the final verification);
+        * a :class:`~aodl.waveform.shepard.ShepardConfig` — always fading-Shepard, with the
+          caller's spacings, duty and per-channel Table II overrides.
 
     Returns
     -------
     A :class:`~aodl.waveform.tones.WaveformSet` on ``[0, T + t_pad]`` with all four channels
-    driven: one tone on ``Ax``/``Ay``, ``Mx``/``My`` on ``Bx``/``By``.
+    driven: one tone on ``Ax``/``Ay``, ``Mx``/``My`` on ``Bx``/``By`` — or, under
+    ``shepard``, one tone per live ladder rung on every channel.
 
     Note
     ----
@@ -486,45 +702,72 @@ def synthesize(
 
     # Eq. S19's lateral coefficient v / (2 lambda F) = 1 / (2 deflection_scale): half the
     # lateral drive goes on each member of a counter-propagating pair, so their *difference*
-    # is the full Table I deflection while their chirps cancel.  Reading `sound_speed` also
-    # asserts that the four channels agree on v, which every scale here assumes.
-    optics = params.optics
-    half = 0.5 * params.sound_speed / (optics.wavelength * optics.focal_length)
-    f_z = f_z_ramp(z, params)
-    array = spec.array
-    ladders = {"Bx": (array.mx, array.delta_f_x), "By": (array.my, array.delta_f_y)}
-    common = {
-        "Ax": x.scale(-half) + f_z,
-        "Bx": x.scale(half) + f_z,
-        "Ay": y.scale(-half) + f_z,
-        "By": y.scale(half) + f_z,
-    }
+    # is the full Table I deflection while their chirps cancel.  Reading `sound_speed` (in
+    # `_lateral_terms`) also asserts that the four channels agree on v, which every scale
+    # assumes.
+    xyz = (x, y, z)
+    t_end = duration + t_pad
 
-    channels: dict[str, ChannelWaveform] = {}
-    for name in CHANNELS:
-        n_tones, delta_f = ladders.get(name, (1, 0.0))
-        # A single-tone channel's phase is a global factor over every Eq. S7 term, so the A
-        # channels take 0 rather than consuming the caller's ladder phases.
-        tone_phases = _phase_argument(phases, name) if name in ladders else (0.0,)
-        ladder = array_tones(
-            n_tones, delta_f, amp=amp, phases=tone_phases, t0=0.0, t1=duration, rng=rng
+    if shepard is None:
+        return _synthesize_s19(
+            spec, params, xyz, t_end, amp=amp, phases=phases, rng=rng, check_band=check_band
         )
-        channels[name] = add_common_ramp(ladder, common[name])
 
-    wfs = WaveformSet(
-        channels=channels,
-        params=params,
-        description=(
-            f"Eq. S19 synthesis: {array.mx}x{array.my} array, {len(spec.moves)} move(s), "
-            f"T = {duration / us:.4g} us + {t_pad / us:.4g} us hold"
-        ),
+    if isinstance(shepard, ShepardConfig):
+        return _synthesize_shepard(
+            spec,
+            params,
+            shepard,
+            xyz,
+            t_end,
+            amp=amp,
+            phases=phases,
+            rng=rng,
+            check_band=check_band,
+            note="",
+        )
+    if not isinstance(shepard, str):
+        raise TypeError(f"shepard must be None, 'auto' or a ShepardConfig, got {type(shepard)!r}")
+    if shepard != "auto":
+        raise ValueError(f"shepard must be None, 'auto' or a ShepardConfig, got {shepard!r}")
+
+    # "auto": let Eq. 1 decide.  The plain drive is built unchecked and then measured against
+    # the band, so the *reason* it does not fit can be quoted in the Shepard set's description.
+    plain = _synthesize_s19(
+        spec, params, xyz, t_end, amp=amp, phases=phases, rng=rng, check_band=False
     )
-    if t_pad > 0.0:
-        wfs = wfs.with_hold_until(duration + t_pad)
-    if check_band:
-        low, high = _poly_extrema(f_z)
-        _check_bands(wfs, 2.0 * params.lens_scale * max(abs(low[0]), abs(high[0])))
-    return wfs
+    try:
+        _check_bands(plain, _requested_z_integral(f_z_ramp(z, params), params))
+    except ValueError as exc:
+        reason = str(exc).split(".  ")[0]
+    else:
+        return replace(
+            plain,
+            description=plain.description + " [shepard='auto': plain Eq. S19 fits the band]",
+        )
+
+    scales = _lateral_terms(x, y, params)
+    lateral_span = {
+        name: max(abs(v) for v in poly_range((x if name.endswith("x") else y).scale(scale)))
+        for name, scale in scales.items()
+    }
+    headroom = {
+        name: min(aod.band[1] - aod.f_center, aod.f_center - aod.band[0])
+        for name, aod in params.channels.items()
+    }
+    cfg = auto_config(spec.array, lateral_span, headroom)
+    return _synthesize_shepard(
+        spec,
+        params,
+        cfg,
+        xyz,
+        t_end,
+        amp=amp,
+        phases=phases,
+        rng=rng,
+        check_band=check_band,
+        note=f" [shepard='auto': plain Eq. S19 refused -- {reason}]",
+    )
 
 
 __all__ = [
