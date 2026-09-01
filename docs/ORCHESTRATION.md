@@ -47,3 +47,4 @@ M1 verification report lands.
 |------|-------|
 | 2026-08-31 | Work orders WO-01…WO-06 authored; Wave A dispatched. |
 | 2026-08-31 | Wave A (WO-01) accepted: 20 tests, S11 mapping vs quadrature ~1e-15; commit `1398fc8`. Wave B (WO-02/03/04) dispatched in parallel. |
+| 2026-09-01 | Wave B accepted: WO-02 (46 tests, `ad1d09f`), WO-03 + WO-04 (40 tests, `6d34333`). Architect rulings: TermArray.alpha is envelope-normalized (α0=1, envelope in `c` via line amps); FrameGrid stays in `field/focal.py` (engine re-exports); per-group `power` stays incoherent until M4. Wave C (WO-05) dispatched. |
