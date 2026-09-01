@@ -46,7 +46,7 @@ Tweezer Control for Rapid Atom Rearrangement* ([arXiv:2510.11451](https://arxiv.
 
 **Built:** M1–M5 — single AOD → crossed pair → full 3D-AODL → fading-Shepard → product API.
 **Checked:** **329 tests**, six notebooks executed in CI, and an independent verification pass
-per milestone (M1–M4 accepted; M5's is the last one out).
+per milestone (M1–M5 accepted).
 
 ## Install
 

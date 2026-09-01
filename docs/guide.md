@@ -158,9 +158,10 @@ the limit, the requested and feasible `|∫ Z dt|`, and the option that would bu
 `plan_motion(..., f_z_bias="auto")` offsets the start frequency by −½·max f_Z, centring the
 walk in the band: **412 µs at 10 µm**, exactly double. Being common to all four channels and
 constant in time, the bias cancels in every Table I quantity — no trap moves. (Bisecting the
-longest feasible `Hold` in a 10 µm lift-hold-drop gives 204 µs → 410 µs; the hold itself
-falls a hair short of doubling because the two ramps carry axial integral the bias does not
-scale.)
+longest feasible `Hold` in a 10 µm lift-hold-drop with 2 µs ramps gives 204 µs → 410 µs; the
+hold itself overshoots doubling by a hair — ×2.0098 — because the two ramps carry a *fixed*
+share of the axial integral, so the hold gets 2·ceiling − ramps rather than 2·(ceiling −
+ramps). Longer ramps overshoot further: 40 µs ones give 166 µs → 372 µs, ×2.241.)
 
 ### 3.6 Fading-Shepard ladders, and when `"auto"` engages
 

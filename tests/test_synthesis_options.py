@@ -383,8 +383,9 @@ def test_the_auto_pre_bias_doubles_the_feasible_hold(params1030):
     Eq. S19 starts every channel at its carrier, so ``f_Z`` walks off one side of the band and
     only the *one-sided* headroom is usable (``docs/PLAN.md`` §1.5's 206 µs at ``Z = 10 µm``).
     Offsetting the start by ``-max f_Z / 2`` centres the walk, and the whole band is in play:
-    412 µs.  The hold itself falls a hair short of doubling only because the two 2 µs ramps
-    carry ``dz * T / 2`` of integral each, which the bias does not scale.
+    412 µs.  The hold itself *overshoots* doubling by a hair (x2.0098) because the two 2 µs
+    ramps carry a fixed ``dz * T / 2`` of integral each, which the bias does not scale: the
+    hold is ``2 C / Z - r``, not ``2 (C / Z - r)``, so the ratio exceeds 2 for any ``r > 0``.
     """
     params = _linear(params1030)
     plain = _longest_feasible_hold(params, 0.0)
