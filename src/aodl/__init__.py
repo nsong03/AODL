@@ -21,6 +21,16 @@ order (``docs/ARCHITECTURE.md`` §1)::
     ladder = array_tones(5, 1 * MHz, t1=50 * us)
     array = WaveformSet({"Ax": ladder, "Ay": ladder}, p)
 
+    # ... or the whole product path: an array, a 3D trajectory, four channels (M3, Eq. S19)
+    from aodl import ArraySpec, Lift, TrajectorySpec, Translate, synthesize
+    from aodl.units import um
+
+    trajectory = TrajectorySpec(
+        array=ArraySpec(2, 2, 1.0 * MHz, 1.3 * MHz),
+        moves=(Lift(5 * um, 60 * us), Translate(15 * um, 10 * um, 80 * us), Lift(-5 * um, 60 * us)),
+    )
+    wfs = synthesize(trajectory, p)   # band-checked; the tweezers lag the drive by tau/2
+
 Everything else stays one import away (``from aodl.device.aodl import build_terms``,
 ``from aodl.field import focal``, ...); SI units are used throughout, with the ``aodl.units``
 constants for boundary code.
@@ -40,9 +50,17 @@ from .params import (
     paper_808,
 )
 from .poly import PiecewisePoly
-from .trajectory import ramps
+from .trajectory import ramps, spec
+from .trajectory.spec import ArraySpec, Hold, Lift, TrajectorySpec, Translate
 from .viz.movie import auto_grid, render_movie
-from .waveform.synthesis import add_common_ramp, array_tones, schroeder_phases
+from .waveform.synthesis import (
+    add_common_ramp,
+    array_tones,
+    f_z_ramp,
+    max_z_integral,
+    schroeder_phases,
+    synthesize,
+)
 from .waveform.tones import (
     ChannelWaveform,
     ConstantEnvelope,
@@ -58,10 +76,13 @@ __all__ = [
     "CHANNELS",
     "AODLParams",
     "AODParams",
+    "ArraySpec",
     "ChannelWaveform",
     "ConstantEnvelope",
     "Envelope",
     "FrameGrid",
+    "Hold",
+    "Lift",
     "OpticsParams",
     "PiecewisePoly",
     "SimResult",
@@ -69,6 +90,8 @@ __all__ = [
     "SpotMetrics",
     "TermArray",
     "ToneTrack",
+    "TrajectorySpec",
+    "Translate",
     "WaveformSet",
     "__version__",
     "add_common_ramp",
@@ -76,8 +99,10 @@ __all__ = [
     "auto_grid",
     "build_terms",
     "default_1030",
+    "f_z_ramp",
     "intensity_frame",
     "intensity_slice_xz",
+    "max_z_integral",
     "measure",
     "paper_808",
     "params",
@@ -85,6 +110,8 @@ __all__ = [
     "render_movie",
     "schroeder_phases",
     "simulate",
+    "spec",
+    "synthesize",
     "track_z",
     "units",
 ]

@@ -149,8 +149,11 @@ so in-array intensity stays constant.
 
 Handy scales at these defaults: **1 MHz ↔ 10.3 µm lateral**; co-chirping all four channels at
 β moves the focus to $\bar Z = 2\tfrac{\lambda F^2}{v^2}\beta$ → **10 µm requires
-β ≈ 48.5 MHz/ms per channel**, so holding Z = 10 µm burns the ±10 MHz band in ≈ 400 µs —
-short lift-move-lower sequences fit without Shepard tones; longer holds motivate milestone 4.
+β ≈ 48.5 MHz/ms per channel**. Eq. 1 headroom: as synthesized in v1 (drives start at the
+carrier, f_Z(0) = 0) the reachable budget is one-sided, $|\int Z\,dt| \le \tfrac{\lambda
+F^2}{v^2}(f_{max}-f_{min})$ → **Z = 10 µm holds for ≈ 206 µs**; pre-biasing the start
+frequency at the band edge doubles this (≈ 412 µs — a possible M5 synthesis option). Short
+lift-move-lower sequences fit without Shepard tones; longer holds motivate milestone 4.
 Rayleigh range z_R ≈ 3.5 µm; transit across the beam 2w_in/v ≈ 6 µs (startup transient time).
 
 ---
