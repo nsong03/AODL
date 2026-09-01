@@ -392,9 +392,11 @@ def spot_params(
     reduces to the textbook ``w(Z) = waist0 sqrt(1 + ((Z - Z_focus)/z_R)^2)``.
 
     The amplitude polynomial (``alpha1``, ``alpha2``: tilt and acoustic irising) perturbs the
-    profile but not this Gaussian envelope, and a fill edge truncates the pupil, broadening the
-    spot and adding hard-edge tails.  Both are second-order for patch sizing at
-    ``PATCH_WAISTS = 4`` radii; the exact profile is always evaluated by :func:`term_field`.
+    profile but not this Gaussian envelope, and is second-order for patch sizing at
+    ``PATCH_WAISTS = 4`` radii.  A fill edge is *not*: it truncates the pupil, and the
+    resulting hard-edge tails decay only as ``1/dX^2``, so :func:`intensity_frame` stops
+    patching an axis that carries one.  The exact profile is always given by
+    :func:`term_field`.
 
     Returns
     -------
@@ -461,19 +463,31 @@ def intensity_frame(
     z_s11 = Z_LAB_SIGN * float(z_lab)
 
     for idx in group_terms(terms, tol):
-        xs = _index_span(
-            float(np.min(xc[idx] - margin[idx])),
-            float(np.max(xc[idx] + margin[idx])),
-            grid.x0,
-            grid.dx,
-            grid.nx,
+        # A fill edge truncates the pupil, so that axis' far field grows hard-edge tails that
+        # decay only as 1/dX^2: no bounded multiple of the Gaussian radius contains them (at
+        # PATCH_WAISTS = 4 up to ~15% of the light is dropped, and the cut is bright enough to
+        # show as a square in a rendered frame).  Patch that axis only once it is fully filled.
+        xs = (
+            (0, grid.nx)
+            if np.any(atx.side[idx] != _NO_EDGE)
+            else _index_span(
+                float(np.min(xc[idx] - margin[idx])),
+                float(np.max(xc[idx] + margin[idx])),
+                grid.x0,
+                grid.dx,
+                grid.nx,
+            )
         )
-        ys = _index_span(
-            float(np.min(yc[idx] - margin[idx])),
-            float(np.max(yc[idx] + margin[idx])),
-            grid.y0,
-            grid.dy,
-            grid.ny,
+        ys = (
+            (0, grid.ny)
+            if np.any(aty.side[idx] != _NO_EDGE)
+            else _index_span(
+                float(np.min(yc[idx] - margin[idx])),
+                float(np.max(yc[idx] + margin[idx])),
+                grid.y0,
+                grid.dy,
+                grid.ny,
+            )
         )
         if xs is None or ys is None:
             continue
