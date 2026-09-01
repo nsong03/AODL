@@ -248,8 +248,11 @@ Fig. 4 "L" trajectory for a 4×4 array; ✓ the user story: 10×10 array lift-tr
 **M4 — Fading-Shepard waveforms.**
 Tone ladders, fade envelopes, interlaced x/y fading, Schroeder phases (S28).
 ✓ Sustained Z-offset beyond the single-chirp band limit (Eq. 1) with constant total
-intensity; ✓ shadow tweezers appear at ±(2λF/v)Δf during fades and vanish outside fading
-zones ((Mx+2)×My extended grid for arrays); ✓ interlaced vs simultaneous fading comparison.
+intensity; ✓ shadow tweezers appear at ±(λF/v)Δf during fades (mid-fade intensity ½ of a
+trap) and vanish outside fading zones — arrays grow an (Mx+2)×My extended grid for odd Mx,
+(Mx+1)×My at every instant for even Mx; ✓ interlaced vs simultaneous fading comparison.
+[Corrected post-verification: offset was misstated as 2λF/v·Δf; the extended-grid width is
+parity-dependent.]
 
 **M5 — Product layer.**
 `api.py` front door, trajectory DSL, parametric-NPZ waveform storage + sample rendering
