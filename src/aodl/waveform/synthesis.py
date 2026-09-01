@@ -29,11 +29,12 @@ package default for array ladders.
 the beam centre left the transducer ``tau/2`` earlier, so the tweezers reproduce the requested
 trajectory *delayed by half an aperture transit*: the atom-plane response at observation time
 ``t`` is what the spec asked for at ``t - tau/2`` (``docs/conventions.md`` §7, 5.8 µs at the
-default hardware).  **v1 does not pre-compensate that retardation** (architect decision): the
-drive is written exactly as Eq. S19 states it, and every comparison — tests, notebooks,
-:func:`aodl.engine.simulate` — evaluates the requested profile at ``t - tau/2``.  Pre-shifting
-the waveform by ``+tau/2`` would be a one-line change here, but it would also hide the
-transient the first ``tau`` of any run genuinely has.
+default hardware).  **That lag is the default**: the drive is written exactly as Eq. S19
+states it, and every comparison — tests, notebooks, :func:`aodl.engine.simulate` — evaluates
+the requested profile at ``t - tau/2``.  ``synthesize(..., retard_compensate=True)`` reads the
+trajectory ``tau/2`` ahead instead (:func:`_advanced`), so the atom plane matches the request
+at ``t``; it does not, and cannot, remove the fill transient the first ``tau`` of any run
+genuinely has, and it starts the array half a transit into its first move rather than at rest.
 """
 
 from __future__ import annotations
@@ -278,7 +279,7 @@ def f_z_ramp(z: PiecewisePoly, params: AODLParams) -> PiecewisePoly:
     return z.antiderivative().scale(0.5 / params.lens_scale)
 
 
-def max_z_integral(params: AODLParams) -> float:
+def max_z_integral(params: AODLParams, *, biased: bool = False) -> float:
     r"""Largest ``|int Z dt|`` [m·s] the RF band can buy on the tightest channel.  Eq. 1.
 
     *The factor-of-2 bookkeeping.*  Table I reads
@@ -303,17 +304,26 @@ def max_z_integral(params: AODLParams) -> float:
     At the default hardware (``f_center = 100 MHz``, band ``+/- 10 MHz``,
     ``lens_scale = 1.03e-16 m.s``) that is ``2.06e-9 m.s`` — ``Z = 10 µm`` sustained for
     206 µs, which is why long holds off the focal plane need the fading-Shepard waveforms of
-    M4 (Eqs. S24-S28).  Pre-biasing ``f_Z`` to the low band edge and sweeping the *whole*
-    band would double it to ``docs/PLAN.md`` §1.5's 412 µs; v1 does not do that (the array
-    would start out of position), so this is the number that applies.  It assumes the whole
-    headroom goes to ``f_Z``: the array ladder and the lateral term take their own share of
-    it, so a real trajectory gets less.
+    M4 (Eqs. S24-S28).
+
+    Parameters
+    ----------
+    biased:
+        ``True`` returns the ceiling with the ``f_z_bias`` pre-compensation of
+        :func:`synthesize` in force: starting the drive half an excursion below ``f_center``
+        centres the ``f_Z`` walk in the band, so it may span ``2 x headroom`` instead of
+        ``headroom`` and the reachable ``|int Z dt|`` **doubles** — ``docs/PLAN.md`` §1.5's
+        412 µs at ``Z = 10 µm``.  The lattice is untouched by the bias (it is common to all
+        four channels, so it cancels in every Table I difference and carries no chirp).
+
+    Either number assumes the whole headroom goes to ``f_Z``: the array ladder and the lateral
+    term take their own share of it, so a real trajectory gets less.
     """
     headroom = min(
         min(aod.band[1] - aod.f_center, aod.f_center - aod.band[0])
         for aod in params.channels.values()
     )
-    return 2.0 * params.lens_scale * headroom
+    return (4.0 if biased else 2.0) * params.lens_scale * headroom
 
 
 def _poly_extrema(p: PiecewisePoly) -> tuple[tuple[float, float], tuple[float, float]]:
@@ -345,6 +355,23 @@ def _poly_extrema(p: PiecewisePoly) -> tuple[tuple[float, float], tuple[float, f
     return (float(values[lo]), float(times[lo])), (float(values[hi]), float(times[hi]))
 
 
+def _bias_clause(params: AODLParams, biased: bool) -> str:
+    """What the ``f_z_bias`` option is worth here — quoted in the band-violation report."""
+    ceiling = max_z_integral(params, biased=True)
+    hold_10um = ceiling / (10.0 * um)
+    if biased:
+        return (
+            f"  That ceiling is already the pre-biased one (f_z_bias centres the f_Z walk in "
+            f"the band, doubling Eq. 1's one-sided budget to {ceiling:.4g} m.s, "
+            f"Z = 10 um for {hold_10um / us:.4g} us)."
+        )
+    return (
+        f"  Pre-biasing the start frequency (f_z_bias='auto') centres the f_Z walk in the band "
+        f"and doubles that ceiling to {ceiling:.4g} m.s "
+        f"(Z = 10 um for {hold_10um / us:.4g} us)."
+    )
+
+
 def _band_message(
     name: str,
     tone: int,
@@ -354,13 +381,14 @@ def _band_message(
     high: tuple[float, float],
     params: AODLParams,
     requested: float,
+    biased: bool = False,
 ) -> str:
     """The band-violation report: what went out, by how much, and what would fit."""
     lo, hi = aod_band
     (f_min, t_min), (f_max, t_max) = low, high
     under, over = lo - (f_center + f_min), (f_center + f_max) - hi
     excess, when = (over, t_max) if over > under else (under, t_min)
-    ceiling = max_z_integral(params)
+    ceiling = max_z_integral(params, biased=biased)
     hold_10um = ceiling / (10.0 * um)
     # The budget is one-sided (f_Z starts at the carrier), so what buys it is the distance
     # from f_center to the *nearer* band edge -- not the full band width, which would
@@ -379,12 +407,13 @@ def _band_message(
         f"(Z = 10 um held for {hold_10um / us:.4g} us) with nothing else using it — this "
         f"trajectory asks for {requested:.4g} m.s of that, and the array ladder and the "
         f"lateral term take their own share.  Shorten the hold, reduce Z, narrow the array, "
-        f"split the move, or wait for the fading-Shepard tones of M4 (Eqs. S24-S28); pass "
-        f"check_band=False to synthesize it anyway for plotting."
+        f"split the move, or switch to the fading-Shepard tones of M4 (shepard='auto', "
+        f"Eqs. S24-S28); pass check_band=False to synthesize it anyway for plotting."
+        + _bias_clause(params, biased)
     )
 
 
-def _check_bands(wfs: WaveformSet, requested: float) -> None:
+def _check_bands(wfs: WaveformSet, requested: float, biased: bool = False) -> None:
     """Raise unless every tone stays inside its channel's absolute RF band (Eq. 1).
 
     The waveform IR carries *detunings*, so the quantity that must fit is
@@ -398,8 +427,25 @@ def _check_bands(wfs: WaveformSet, requested: float) -> None:
             low, high = _poly_extrema(tone.freq)
             if aod.f_center + low[0] < lo - BAND_TOL or aod.f_center + high[0] > hi + BAND_TOL:
                 raise ValueError(
-                    _band_message(name, i, (lo, hi), aod.f_center, low, high, wfs.params, requested)
+                    _band_message(
+                        name,
+                        i,
+                        (lo, hi),
+                        aod.f_center,
+                        low,
+                        high,
+                        wfs.params,
+                        requested,
+                        biased,
+                    )
                 )
+
+
+def _with_switch_ramp(cfg: ShepardConfig, switch_ramp: float | None) -> ShepardConfig:
+    """``cfg`` with :attr:`ShepardConfig.switch_ramp` overridden when one was passed."""
+    if switch_ramp is None:
+        return cfg
+    return replace(cfg, switch_ramp=float(switch_ramp))
 
 
 def _phase_argument(
@@ -427,6 +473,33 @@ def _padded(p: PiecewisePoly, t_end: float) -> PiecewisePoly:
     return PiecewisePoly.concat([p, PiecewisePoly.constant(float(p(t1)), t1, float(t_end))])
 
 
+def _advanced(p: PiecewisePoly, lead: float) -> PiecewisePoly:
+    r"""``q(t) = p(min(t + lead, T))`` on ``p``'s own domain — the §2.2 pre-compensation.
+
+    Writing the drive from a trajectory read ``lead = tau/2`` *ahead* of drive time is what
+    cancels the retardation lag: the atom plane responds to the acoustic sample that left the
+    transducer half a transit earlier (``docs/conventions.md`` §7), so a drive built from
+    ``X(t + tau/2)`` reproduces ``X`` at observation time ``t`` rather than at ``t - tau/2``.
+
+    Exact, not resampled: the shifted polynomial is re-expressed on a breakpoint set that
+    includes the domain start (:meth:`~aodl.poly.PiecewisePoly._refined` rebases a segment onto
+    a sub-interval in closed form), the segments before it are dropped, and the ``lead``-long
+    tail is a constant at the trajectory's terminal value — which is exact too, because every
+    move is rest-to-rest, so ``p`` is already flat there.
+    """
+    t0, t1 = p.domain
+    shift = float(lead)
+    if shift <= 0.0:
+        return p
+    if shift >= t1 - t0:
+        return PiecewisePoly.constant(float(p(t1)), t0, t1)
+    shifted = p.shift(-shift)  # domain (t0 - lead, t1 - lead), value p(t + lead)
+    keep = shifted.breaks[shifted.breaks > t0 + TIME_TOL]
+    refined = shifted._refined(np.concatenate([[t0 - shift, t0], keep]))
+    head = PiecewisePoly(refined.breaks[1:], refined.coeffs[1:])
+    return PiecewisePoly.concat([head, PiecewisePoly.constant(float(p(t1)), t1 - shift, t1)])
+
+
 def _lateral_terms(x: PiecewisePoly, y: PiecewisePoly, params: AODLParams) -> dict[str, float]:
     """Eq. S19's ``-+ v P(t) / (2 lambda F)`` scale — half the lateral drive per pair member."""
     optics = params.optics
@@ -444,10 +517,19 @@ def _shepard_band_message(
     delta_f: float,
     fade: ChannelFade,
     eta: float,
+    comb: float,
 ) -> str:
     """The band-violation report of the *bounded* fading-Shepard excursion."""
     lo, hi = aod_band
     excess = max(lo - (f_center - bound), (f_center + bound) - hi)
+    comb_clause = (
+        ""
+        if comb == 0.0
+        else (
+            f" and the {abs(comb) / MHz:.4f} MHz comb offset that puts an even-M ladder on "
+            f"Eq. S19's lattice"
+        )
+    )
     return (
         f"channel {name!r} leaves its usable band even with fading-Shepard tones: its live "
         f"rungs span [{(f_center - bound) / MHz:.4f}, {(f_center + bound) / MHz:.4f}] MHz, "
@@ -455,7 +537,8 @@ def _shepard_band_message(
         f"Unlike Eq. S19 this bound does not grow with the hold (Eqs. S24-S28: the ladder "
         f"slides, the live window does not) — it is the fade window "
         f"(M + eta) delta_f / 2 = ({fade.m} + {eta:g}) x {delta_f / MHz:.4f} MHz / 2 = "
-        f"{window / MHz:.4f} MHz plus the lateral term's {lateral / MHz:.4f} MHz.  Narrow the "
+        f"{window / MHz:.4f} MHz plus the lateral term's {lateral / MHz:.4f} MHz"
+        f"{comb_clause}.  Narrow the "
         f"ladder (delta_f), shrink the array (M), reduce the lateral excursion, or widen the "
         f"band; pass check_band=False to synthesize it anyway for plotting."
     )
@@ -465,6 +548,7 @@ def _check_shepard_bands(
     cfg: ShepardConfig,
     fades: Mapping[str, ChannelFade],
     lateral: Mapping[str, PiecewisePoly],
+    combs: Mapping[str, float],
     params: AODLParams,
 ) -> None:
     """Raise unless every channel's *live* tones stay in band (the Shepard claim, S24-S28).
@@ -480,11 +564,21 @@ def _check_shepard_bands(
         span = max(abs(value) for value in poly_range(lateral[name]))
         delta_f = cfg.spacing(name)
         window = 0.5 * (fades[name].m + cfg.eta) * delta_f
-        bound = shepard_band_bound(fades[name], delta_f, cfg.eta, span)
+        comb = combs[name]
+        bound = shepard_band_bound(fades[name], delta_f, cfg.eta, span, comb)
         if aod.f_center - bound < lo - BAND_TOL or aod.f_center + bound > hi + BAND_TOL:
             raise ValueError(
                 _shepard_band_message(
-                    name, (lo, hi), aod.f_center, bound, window, span, delta_f, fades[name], cfg.eta
+                    name,
+                    (lo, hi),
+                    aod.f_center,
+                    bound,
+                    window,
+                    span,
+                    delta_f,
+                    fades[name],
+                    cfg.eta,
+                    comb,
                 )
             )
 
@@ -511,8 +605,9 @@ def _synthesize_shepard(
         for name, scale in scales.items()
     }
     fades = cfg.resolve(spec.array)
+    combs = cfg.comb_offsets(fades)
     if check_band:
-        _check_shepard_bands(cfg, fades, lateral, params)
+        _check_shepard_bands(cfg, fades, lateral, combs, params)
 
     channels: dict[str, ChannelWaveform] = {}
     for name in CHANNELS:
@@ -527,9 +622,15 @@ def _synthesize_shepard(
             amp=amp,
             phases=tone_phases,
             rng=rng,
+            comb_offset=combs[name],
+            switch_ramp=cfg.switch_ramp,
         )
     counts = ", ".join(f"{name}:{channels[name].n_tones}" for name in CHANNELS)
     array = spec.array
+    lattice = ", ".join(f"{name}:{combs[name] / MHz:+.4g}" for name in ("Bx", "By"))
+    extras = f"; comb offset (MHz) {lattice}" if any(combs.values()) else ""
+    if cfg.switch_ramp > 0.0:
+        extras += f"; switch_ramp = {cfg.switch_ramp / us:.4g} us"
     return WaveformSet(
         channels=channels,
         params=params,
@@ -538,7 +639,7 @@ def _synthesize_shepard(
             f"{len(spec.moves)} move(s), T = {spec.duration / us:.4g} us + "
             f"{(t_end - spec.duration) / us:.4g} us hold; "
             f"delta_f = ({cfg.delta_f_x / MHz:.4g}, {cfg.delta_f_y / MHz:.4g}) MHz, "
-            f"eta = {cfg.eta:g}; rungs {counts}{note}"
+            f"eta = {cfg.eta:g}; rungs {counts}{extras}{note}"
         ),
     )
 
@@ -553,6 +654,7 @@ def _synthesize_s19(
     phases: str | ArrayLike | Mapping[str, str | ArrayLike],
     rng: np.random.Generator | None,
     check_band: bool,
+    f_z_bias: float | str = 0.0,
     note: str = "",
 ) -> WaveformSet:
     """Build the plain Eq. S19 drive (one tone per A channel, the array ladder on B)."""
@@ -560,10 +662,12 @@ def _synthesize_s19(
     duration = spec.duration
     scales = _lateral_terms(x, y, params)
     f_z = f_z_ramp(z, params)
+    bias = resolve_f_z_bias(f_z_bias, f_z, params)
     array = spec.array
     ladders = {"Bx": (array.mx, array.delta_f_x), "By": (array.my, array.delta_f_y)}
     common = {
-        name: (x if name.endswith("x") else y).scale(scale) + f_z for name, scale in scales.items()
+        name: ((x if name.endswith("x") else y).scale(scale) + f_z).offset(bias)
+        for name, scale in scales.items()
     }
 
     channels: dict[str, ChannelWaveform] = {}
@@ -577,18 +681,20 @@ def _synthesize_s19(
         )
         channels[name] = add_common_ramp(ladder, common[name])
 
+    bias_note = "" if bias == 0.0 else f"; f_Z pre-bias {bias / MHz:+.4g} MHz"
     wfs = WaveformSet(
         channels=channels,
         params=params,
         description=(
             f"Eq. S19 synthesis: {array.mx}x{array.my} array, {len(spec.moves)} move(s), "
-            f"T = {duration / us:.4g} us + {(t_end - duration) / us:.4g} us hold{note}"
+            f"T = {duration / us:.4g} us + {(t_end - duration) / us:.4g} us hold"
+            f"{bias_note}{note}"
         ),
     )
     if t_end > duration:
         wfs = wfs.with_hold_until(t_end)
     if check_band:
-        _check_bands(wfs, _requested_z_integral(f_z, params))
+        _check_bands(wfs, _requested_z_integral(f_z, params), bias != 0.0)
     return wfs
 
 
@@ -596,6 +702,51 @@ def _requested_z_integral(f_z: PiecewisePoly, params: AODLParams) -> float:
     """``max |int Z dt|`` [m.s] the trajectory asks for — the Eq. 1 quantity."""
     lo, hi = poly_range(f_z)
     return 2.0 * params.lens_scale * max(abs(lo), abs(hi))
+
+
+def requested_z_integral(spec: TrajectorySpec, params: AODLParams) -> float:
+    """``max_t |int_0^t Z dt'|`` [m.s] of ``spec`` — what Eq. 1 budgets (:func:`max_z_integral`).
+
+    The quantity a band refusal quotes and :class:`aodl.api.PlanReport` reports: the axial
+    integral is what a plain Eq. S19 drive has to carry on every channel at once.
+    """
+    _, _, z = spec.compile()
+    return _requested_z_integral(f_z_ramp(z, params), params)
+
+
+def resolve_f_z_bias(bias: float | str, f_z: PiecewisePoly, params: AODLParams) -> float:
+    r"""The constant [Hz] the ``f_z_bias`` option adds to all four channels.  §2.3.
+
+    Eq. S19 starts every channel at its carrier (``f_Z(0) = 0``) and then walks it one way, so
+    only the headroom on *one side* of ``f_center`` is usable and the Eq. 1 budget is halved
+    for no physical reason (:func:`max_z_integral`).  Offsetting the start frequency by
+
+    .. math::
+
+        c = -\tfrac{1}{2}\big(\min_t f_Z + \max_t f_Z\big)
+          \;\;\xrightarrow{\;Z \ge 0\;}\;\; -\tfrac{1}{2}\,\frac{v^2}{2\lambda F^2}\!\int Z\,dt
+
+    centres the walk in the band, and the reachable ``|int Z dt|`` doubles.  ``"auto"`` is that
+    value, clamped to ``+-`` the tightest channel's headroom so the bias alone can never be
+    what leaves the band; a float is taken verbatim.
+
+    The bias is **common to all four channels and constant in time**, so by Table I it moves
+    nothing: it cancels in both lateral differences (``X``, ``Y``) and carries no chirp, hence
+    no ``Zbar`` and no ``Delta F``.  All it changes is where in the band the drive sits.
+    """
+    headroom = min(
+        min(aod.band[1] - aod.f_center, aod.f_center - aod.band[0])
+        for aod in params.channels.values()
+    )
+    if isinstance(bias, str):
+        if bias != "auto":
+            raise ValueError(f"f_z_bias must be a number or 'auto', got {bias!r}")
+        lo, hi = poly_range(f_z)
+        return float(np.clip(-0.5 * (lo + hi), -headroom, headroom))
+    value = float(bias)
+    if not math.isfinite(value):
+        raise ValueError(f"f_z_bias must be finite, got {bias!r}")
+    return value
 
 
 def synthesize(
@@ -608,6 +759,9 @@ def synthesize(
     rng: np.random.Generator | None = None,
     check_band: bool = True,
     shepard: str | ShepardConfig | None = None,
+    retard_compensate: bool = False,
+    f_z_bias: float | str = 0.0,
+    switch_ramp: float | None = None,
 ) -> WaveformSet:
     r"""Compile a trajectory into the four AODL channel drives.  **Eq. S19.**
 
@@ -675,6 +829,26 @@ def synthesize(
           when ``check_band=False``, which then only skips the final verification);
         * a :class:`~aodl.waveform.shepard.ShepardConfig` — always fading-Shepard, with the
           caller's spacings, duty and per-channel Table II overrides.
+    retard_compensate:
+        Evaluate the trajectory at ``min(t + tau/2, T)`` instead of ``t`` (:func:`_advanced`),
+        so the *atom plane* reproduces the request at observation time ``t`` rather than at
+        ``t - tau/2``.  ``False`` (default) is Eq. S19 verbatim and reproduces v1 bit for bit;
+        ``True`` costs the array its rest position at ``t = 0`` (the drive starts half a
+        transit into the move) and does not remove the fill transient, which is a property of
+        the aperture, not of the schedule.
+    f_z_bias:
+        Constant [Hz] added to all four channels (:func:`resolve_f_z_bias`), **plain Eq. S19
+        only**.  ``0.0`` (default) starts the drive at the carrier as Eq. S19 states; ``"auto"``
+        centres the ``f_Z`` walk in the band, which doubles Eq. 1's budget
+        (:func:`max_z_integral` with ``biased=True``).  Being common and constant it cancels in
+        every Table I quantity, so the array's positions are untouched.  Rejected together with
+        an explicit :class:`~aodl.waveform.shepard.ShepardConfig` (the ladders are already
+        band-bounded); with ``shepard="auto"`` it applies to the Eq. S19 attempt, and is simply
+        not needed if that attempt fails and the ladders take over.
+    switch_ramp:
+        Overrides :attr:`~aodl.waveform.shepard.ShepardConfig.switch_ramp` [s] when not
+        ``None`` — the raised-cosine on/off ramp of the ``p = 0`` array rungs
+        (:class:`~aodl.waveform.shepard.SwitchRamped`).  Only meaningful under ``shepard``.
 
     Returns
     -------
@@ -684,9 +858,9 @@ def synthesize(
 
     Note
     ----
-    The waveform's time axis starts at 0 and the atom-plane response lags it by ``tau/2``;
-    there is no retardation pre-compensation in v1 (module docstring).  Compare measurements
-    at ``t`` against the requested profile at ``t - tau/2``.
+    The waveform's time axis starts at 0 and the atom-plane response lags it by ``tau/2``
+    unless ``retard_compensate=True`` (module docstring).  With the default, compare
+    measurements at ``t`` against the requested profile at ``t - tau/2``.
     """
     if not isinstance(spec, TrajectorySpec):
         raise TypeError(f"synthesize() needs a TrajectorySpec, got {type(spec)!r}")
@@ -705,19 +879,38 @@ def synthesize(
     # is the full Table I deflection while their chirps cancel.  Reading `sound_speed` (in
     # `_lateral_terms`) also asserts that the four channels agree on v, which every scale
     # assumes.
+    if retard_compensate:
+        lead = 0.5 * max(aod.transit_time for aod in params.channels.values())
+        x, y, z = (_advanced(p, lead) for p in (x, y, z))
     xyz = (x, y, z)
     t_end = duration + t_pad
+    biased = not (isinstance(f_z_bias, float | int) and float(f_z_bias) == 0.0)
 
     if shepard is None:
         return _synthesize_s19(
-            spec, params, xyz, t_end, amp=amp, phases=phases, rng=rng, check_band=check_band
+            spec,
+            params,
+            xyz,
+            t_end,
+            amp=amp,
+            phases=phases,
+            rng=rng,
+            check_band=check_band,
+            f_z_bias=f_z_bias,
         )
 
     if isinstance(shepard, ShepardConfig):
+        if biased:
+            raise ValueError(
+                "f_z_bias applies to plain Eq. S19 only: a fading-Shepard drive never lets "
+                "f_Z leave the fade window in the first place (Eqs. S24-S28), so biasing the "
+                "start frequency buys nothing and only eats band.  Drop f_z_bias, or drop the "
+                "ShepardConfig and let shepard='auto' choose."
+            )
         return _synthesize_shepard(
             spec,
             params,
-            shepard,
+            _with_switch_ramp(shepard, switch_ramp),
             xyz,
             t_end,
             amp=amp,
@@ -734,10 +927,18 @@ def synthesize(
     # "auto": let Eq. 1 decide.  The plain drive is built unchecked and then measured against
     # the band, so the *reason* it does not fit can be quoted in the Shepard set's description.
     plain = _synthesize_s19(
-        spec, params, xyz, t_end, amp=amp, phases=phases, rng=rng, check_band=False
+        spec,
+        params,
+        xyz,
+        t_end,
+        amp=amp,
+        phases=phases,
+        rng=rng,
+        check_band=False,
+        f_z_bias=f_z_bias,
     )
     try:
-        _check_bands(plain, _requested_z_integral(f_z_ramp(z, params), params))
+        _check_bands(plain, _requested_z_integral(f_z_ramp(z, params), params), biased)
     except ValueError as exc:
         reason = str(exc).split(".  ")[0]
     else:
@@ -755,7 +956,8 @@ def synthesize(
         name: min(aod.band[1] - aod.f_center, aod.f_center - aod.band[0])
         for name, aod in params.channels.items()
     }
-    cfg = auto_config(spec.array, lateral_span, headroom)
+    cfg = _with_switch_ramp(auto_config(spec.array, lateral_span, headroom), switch_ramp)
+    dropped = " (f_z_bias dropped: the ladders are band-bounded already)" if biased else ""
     return _synthesize_shepard(
         spec,
         params,
@@ -766,7 +968,7 @@ def synthesize(
         phases=phases,
         rng=rng,
         check_band=check_band,
-        note=f" [shepard='auto': plain Eq. S19 refused -- {reason}]",
+        note=f" [shepard='auto': plain Eq. S19 refused -- {reason}{dropped}]",
     )
 
 
@@ -779,6 +981,8 @@ __all__ = [
     "array_tones",
     "f_z_ramp",
     "max_z_integral",
+    "requested_z_integral",
+    "resolve_f_z_bias",
     "schroeder_phases",
     "synthesize",
 ]

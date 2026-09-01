@@ -54,6 +54,7 @@ SPOT_TABLE_KEYS: tuple[str, ...] = (
     "wx",
     "wy",
     "power",
+    "power_coherent",
     "df_opt",
 )
 
@@ -248,6 +249,12 @@ class SimResult:
 
         One row per (frame, frequency group) — long format, so a run with a single tweezer
         gives one row per frame and ``table["y"]`` plots straight against ``table["time"]``.
+
+        Both readings of a group's light are columns: the incoherent ``power`` (the default
+        weight everywhere in this package) and the exact Gram ``power_coherent``, which is what
+        the group's own rendered frame integrates to and the only one that can see a degenerate
+        pair interfere (:class:`~aodl.field.measure.SpotMetrics`).  They agree except where
+        degenerate terms actually overlap — the Fig. S6 shadow-tweezer situation.
         """
         rows = [
             (
@@ -262,6 +269,7 @@ class SimResult:
                 m.wx,
                 m.wy,
                 m.power,
+                m.power_coherent,
                 m.df_opt,
             )
             for i, frame in enumerate(self.metrics)

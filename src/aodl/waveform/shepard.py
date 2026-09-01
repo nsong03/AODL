@@ -93,6 +93,14 @@ always a single-axis ``+-Delta f`` pair rather than the sixteen-ray grid that si
 fading would produce (``docs/PLAN.md`` §1.3).  Shadows never vanish entirely — with
 ``eta = 1/2`` some axis is always fading — they simply never appear on both axes at once.
 
+**Where the traps land, and the comb offset.**  A tweezer's position depends on the index
+*difference* between the ``A`` and ``B`` lines feeding it (Table I), so a Shepard array sits
+on the lattice ``X(t) + d * deflection_scale * Delta f``, ``d`` integer — while Eq. S19 puts
+an ``M``-tone ladder at ``(n - (M-1)/2) Delta f``, i.e. on *half-integer* multiples when
+``M`` is even.  :func:`lattice_comb_offset` closes that half-pitch gap by adding a constant
+``Delta f / 2`` to the even-``M`` ``B`` ladders' **frequencies only**, leaving ``g``, the
+windows and the schedule alone (:func:`shepard_ladder`).
+
 All frequencies here are **detunings** from ``f_center`` (Eq. S2 rotating frame,
 ``docs/conventions.md`` §1), and every quantity is SI.
 """
@@ -144,6 +152,11 @@ INDEX_EPS = 1e-9
 
 #: Relative cut for trimming numerically-zero high-order coefficients before root-finding.
 _ROOT_TRIM = 1e-12
+
+#: Peak of ``x^2 (1 - sin^4(pi x / 2))`` on ``x`` in ``[0, 1]`` (at ``x = 0.5959``) — the shape
+#: factor of the interior-column flatness cost a :class:`SwitchRamped` rectangle pays.  See
+#: that class' ``Note``; ``tests/test_synthesis_options.py`` re-derives it numerically.
+SWITCH_FLATNESS_SHAPE = 0.20582
 
 _TWO_PI = 2.0 * math.pi
 _PI_2 = 0.5 * math.pi
@@ -490,6 +503,208 @@ class FadeZoneEnvelope:
         return _shaped(second * gdot * gdot + first * gddot, t_arr)
 
 
+@dataclass(frozen=True)
+class SwitchRamped:
+    r"""A fade window multiplied by raised-cosine on/off ramps at its own switch instants.
+
+    The Table II array row shapes the ``B`` ladder with ``p = 0`` — a **rectangle** in the
+    fade coordinate, because that ladder *is* the array ladder and shaping it would shape the
+    array.  A rung therefore appears and disappears as a step in time, and a step is broadband:
+    ``docs/ORCHESTRATION.md``'s M5 backlog (WO-16 finding F-3) records the resulting splatter.
+    This envelope is the mitigation: with ``ramp = r`` seconds,
+
+    .. math::
+
+        A(t) = A_{\text{fade}}(t)\, s(t), \qquad
+        s = \sin^2\!\Big(\frac{\pi}{2}\frac{t - t_{on}}{r}\Big) \text{ on } [t_{on}, t_{on}+r],
+        \quad 1 \text{ on the plateau},
+
+    and the mirror image before ``t_off`` — the same raised-cosine gate as
+    :class:`~aodl.waveform.tones.SmoothOnOff`, but built per rung from the instants that rung
+    actually switches at, i.e. the ``|g| = g_outer`` crossings :attr:`FadeZoneEnvelope.
+    zone_times` already computes.  ``A`` and ``dA`` stay continuous everywhere (the gate and
+    its derivative vanish at both ends); ``d2A`` jumps at the four gate corners, exactly as it
+    does for :class:`~aodl.waveform.tones.SmoothOnOff`.
+
+    **The ramps sit inside the window, never outside it.**  Anchoring them at the crossing and
+    letting them spill over would drive the rung while ``|g| > g_outer``, i.e. outside the
+    interval :func:`shepard_band_bound` bounds — the one claim the whole scheme rests on.
+    Ramping inwards keeps the support, and hence the bound, exactly as it was.  A live interval
+    shorter than ``2 r`` gets a proportionally shorter ramp; an interval that starts or ends at
+    the edge of the *programmed span* rather than at a crossing is not ramped there, because
+    the drive itself begins and ends at those instants.
+
+    Parameters
+    ----------
+    base:
+        The rung's :class:`FadeZoneEnvelope` (in practice a ``p = 0`` rectangle).
+    ramp:
+        Ramp duration [s], ``> 0``.
+
+    Note
+    ----
+    **What a ramp costs.**  Two things, both bounded and both worth stating:
+
+    1. *Interior-column flatness.*  The constant-power identity ``p_A + p_B = 1`` needs the
+       ``B`` rectangle to be **flat** wherever the ``A`` window is fading, and a rung entering
+       at ``t_on`` is exactly the partner of the ``A`` rung entering there.  During the ramp an
+       interior column reads ``cos^2 theta + sin^2 theta * s^2`` instead of ``1``; with the
+       ladder sliding at ``gdot`` the dying weight is ``sin^2(pi gdot (t - t_on) / Delta f)``,
+       so the worst dip is
+
+           ``max_x sin^2(pi rho_r x) (1 - sin^4(pi x / 2))  ~  (pi rho_r)^2 *``
+           :data:`SWITCH_FLATNESS_SHAPE`,   ``rho_r = |gdot| r / Delta f``
+
+       — the fraction of a rung spacing the ladder slides during one ramp.  Keep ``rho_r``
+       small (``rho_r = 0.05`` costs 0.5 %) or accept the trade; the extended column, which had
+       no continuity at all, gains it in exchange.
+    2. *Aperture-expansion validity.*  A ``p = 0`` rectangle has ``dA = d2A = 0``, so a ramped
+       rung is the only place the array row's irising terms come from at all, and they are
+       largest at the corners of the gate — where ``A`` vanishes as ``(t - t_on)^2`` while the
+       log-derivatives it feeds :mod:`aodl.device.aodl` diverge as its inverse.  The product,
+       i.e. what the Eq. S5 quadratic actually contributes to the line's weight, settles at
+
+           ``~ (pi/2)^4 rho_ramp^4``,   ``rho_ramp = (w_in / v) / r``
+
+       — 3 % at ``r = tau`` (``w_in / v`` is 3.1 µs at the default hardware, so
+       ``rho_ramp = 0.27``), 4e-4 at ``r = 3 tau``.  It is the same "a switch may not cross the
+       beam faster than the beam is wide" condition that :class:`FadeZoneEnvelope`'s ``rho`` law
+       states for the fades: keep the ramp a few beam transits long and the quadratic is
+       describing a nearly flat envelope again.
+
+    Not serializable: ``docs/waveform_format.md``'s schema v2 knows the three envelopes of
+    :mod:`aodl.waveform.serialize` and has no slot for a ramp, so
+    :meth:`~aodl.waveform.tones.WaveformSet.save` refuses a ramped set by name.  Re-synthesize
+    from the :class:`~aodl.trajectory.spec.TrajectorySpec` instead, or save with
+    ``switch_ramp = 0``.
+    """
+
+    base: FadeZoneEnvelope
+    ramp: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.base, FadeZoneEnvelope):
+            raise TypeError(
+                f"SwitchRamped.base must be a FadeZoneEnvelope, got {type(self.base)!r}"
+            )
+        ramp = float(self.ramp)
+        if not math.isfinite(ramp) or ramp <= 0.0:
+            raise ValueError(f"SwitchRamped.ramp must be finite and positive, got {self.ramp!r}")
+        object.__setattr__(self, "ramp", ramp)
+
+    # -- the live intervals and their ramps
+
+    @functools.cached_property
+    def _gates(self) -> tuple[NDArray[np.float64], ...]:
+        """``(t_on, t_off, rise, fall)`` of every live interval, sorted and disjoint.
+
+        The interval edges are the rung's own ``|g| = g_outer`` crossings plus the ends of the
+        programmed span; an edge that is a crossing is ramped, an edge that is the span's own
+        end is not.  Ramps are shortened to half the interval so a rise and a fall never
+        overlap (the :class:`~aodl.waveform.tones.SmoothOnOff` rule).
+        """
+        t0, t1 = self.base.g.domain
+        switches = self.base.crossing_times(self.base.g_outer)
+        inside = switches[(switches > t0) & (switches < t1)]
+        edges = np.unique(np.concatenate([[t0, t1], inside]))
+        rows: list[tuple[float, float, float, float]] = []
+        for lo, hi in zip(edges[:-1], edges[1:], strict=True):
+            if abs(float(self.base.g(0.5 * (lo + hi)))) >= self.base.g_outer:
+                continue  # the rung is silent across this interval
+            width = min(self.ramp, 0.5 * (hi - lo))
+            rise = width if np.any(inside == lo) else 0.0
+            fall = width if np.any(inside == hi) else 0.0
+            rows.append((float(lo), float(hi), rise, fall))
+        block = np.array(rows, dtype=np.float64).reshape(len(rows), 4)
+        return tuple(np.ascontiguousarray(block[:, j]) for j in range(4))
+
+    def _gate_terms(
+        self, t: NDArray[np.float64]
+    ) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64]]:
+        """``(s, ds/dt, d2s/dt2)`` of the raised-cosine gate at ``t``.
+
+        The gates are disjoint and sorted, so one ``searchsorted`` finds the only interval a
+        time can belong to — no loop over rungs or over intervals, whatever the run's length.
+        Outside every gate the gate is left at ``1``: the base window is exactly zero there, so
+        the value is immaterial and this keeps the plateau branch free of special cases.
+        """
+        t_on, t_off, rise, fall = self._gates
+        s = np.ones(t.shape, dtype=np.float64)
+        first = np.zeros(t.shape, dtype=np.float64)
+        second = np.zeros(t.shape, dtype=np.float64)
+        if t_on.size == 0:
+            return s, first, second
+        idx = np.clip(np.searchsorted(t_on, t, side="right") - 1, 0, t_on.size - 1)
+        inside = (t >= t_on[idx]) & (t <= t_off[idx])
+        for edge, width, sign in ((t_on[idx], rise[idx], 1.0), (t_off[idx], fall[idx], -1.0)):
+            u = sign * (t - edge)
+            active = inside & (width > 0.0) & (u >= 0.0) & (u < width)
+            if not np.any(active):
+                continue
+            c = np.pi / (2.0 * np.where(width > 0.0, width, 1.0))
+            s = np.where(active, np.sin(c * u) ** 2, s)
+            first = np.where(active, sign * c * np.sin(2.0 * c * u), first)
+            second = np.where(active, 2.0 * c * c * np.cos(2.0 * c * u), second)
+        return s, first, second
+
+    # -- the Envelope protocol (product rule; the base carries its own chain rule)
+
+    def A(self, t: ArrayLike) -> NDArray[np.float64] | float:
+        """Envelope value ``A_fade(t) * s(t)``."""
+        t_arr = np.asarray(t, dtype=np.float64)
+        gate, _, _ = self._gate_terms(t_arr)
+        return _shaped(np.asarray(self.base.A(t_arr), dtype=np.float64) * gate, t_arr)
+
+    def dA(self, t: ArrayLike) -> NDArray[np.float64] | float:
+        """First derivative ``A_fade' s + A_fade s'`` [1/s]."""
+        t_arr = np.asarray(t, dtype=np.float64)
+        gate, gate_dot, _ = self._gate_terms(t_arr)
+        value = np.asarray(self.base.A(t_arr), dtype=np.float64)
+        slope = np.asarray(self.base.dA(t_arr), dtype=np.float64)
+        return _shaped(slope * gate + value * gate_dot, t_arr)
+
+    def d2A(self, t: ArrayLike) -> NDArray[np.float64] | float:
+        """Second derivative ``A_fade'' s + 2 A_fade' s' + A_fade s''`` [1/s^2]."""
+        t_arr = np.asarray(t, dtype=np.float64)
+        gate, gate_dot, gate_ddot = self._gate_terms(t_arr)
+        value = np.asarray(self.base.A(t_arr), dtype=np.float64)
+        slope = np.asarray(self.base.dA(t_arr), dtype=np.float64)
+        curve = np.asarray(self.base.d2A(t_arr), dtype=np.float64)
+        return _shaped(curve * gate + 2.0 * slope * gate_dot + value * gate_ddot, t_arr)
+
+    # -- diagnostics forwarded from the window this one wraps
+
+    @property
+    def g(self) -> PiecewisePoly:
+        """The wrapped window's fade coordinate ``g(t)`` [Hz]."""
+        return self.base.g
+
+    @property
+    def g_centre(self) -> float:
+        """The wrapped window's fade centre [Hz] (:attr:`FadeZoneEnvelope.g_centre`)."""
+        return self.base.g_centre
+
+    @property
+    def g_outer(self) -> float:
+        """The wrapped window's support half-width [Hz] — also where the ramps are anchored."""
+        return self.base.g_outer
+
+    @property
+    def is_active(self) -> bool:
+        """Is this rung ever audible?  (The ramps only ever shrink what the window opens.)"""
+        return self.base.is_active
+
+    def crossing_times(self, level: float) -> NDArray[np.float64]:
+        """Drive times [s] where ``|g(t)| = level`` (:meth:`FadeZoneEnvelope.crossing_times`)."""
+        return self.base.crossing_times(level)
+
+    @property
+    def zone_times(self) -> NDArray[np.float64]:
+        """Branch boundaries of the composite envelope: the window's, plus the ramp ends."""
+        t_on, t_off, rise, fall = self._gates
+        return np.unique(np.concatenate([self.base.zone_times, t_on + rise, t_off - fall]))
+
+
 # ================================================================== Table II configuration
 
 
@@ -551,6 +766,42 @@ def table_ii(array: ArraySpec) -> dict[str, ChannelFade]:
     return fades
 
 
+def lattice_comb_offset(fade: ChannelFade, delta_f: float) -> float:
+    r"""The constant a ``B`` ladder's *frequencies* take so its traps land on Eq. S19's lattice.
+
+    ``delta_f / 2`` for an even-``M`` ladder, ``0`` for an odd one.
+
+    A tweezer's lateral position is ``deflection_scale (f_B - f_A)`` (Table I), and both
+    frequencies carry the same ``f_Z``, so a Shepard array's columns sit at the *index
+    differences* ``b - a``: integer multiples of the pitch about the array centre.  Eq. S19
+    instead centres a counted ladder, ``f^{(n)} = (n - (M-1)/2) Delta f``, which is
+    half-integer multiples when ``M`` is even — so ``shepard="auto"`` used to move an even-``M``
+    user array by half a pitch (WO-16 finding F-2).  Adding ``Delta f / 2`` to every ``B`` rung
+    *frequency* closes that gap.
+
+    **Why the frequency and not ``g``.**  Nothing ties the fade coordinate ``g = f_Z + (n + xi)
+    Delta f`` of Eq. S25 to the frequency offset: the schedule only has to hand a rung over to
+    its neighbour as ``f_Z`` advances by ``Delta f``, which depends on ``g`` alone.  Leaving
+    ``g``, the windows, the duty and the ``A`` channels untouched therefore preserves *every*
+    structural property the scheme rests on:
+
+    * **co-location** — which ``(a, b)`` combinations share a trap depends on ``b - a``, and a
+      constant common to all ``b`` cannot change a difference of two of them.  The
+      ``p_A + p_B = 1`` constant-power identity is a statement about those pairs, so it holds
+      verbatim;
+    * **degeneracy** — every emission line of the channel, fundamental or IM3 (``f_j + f_k -
+      f_i``, ``2 f_j - f_i``: unit coefficient sums), shifts by exactly the same constant, so
+      all ``df_opt`` differences — and hence :func:`aodl.field.focal.group_terms` — are
+      unchanged;
+    * **the band bound** — the live window moves bodily with the comb, which is why
+      :func:`shepard_band_bound` simply gains ``|comb_offset|``.
+
+    The whole trap pattern (shadows and ghosts included) translates rigidly by half a pitch,
+    which is exactly the correction wanted.
+    """
+    return 0.5 * float(delta_f) if fade.m % 2 == 0 else 0.0
+
+
 @dataclass(frozen=True)
 class ShepardConfig:
     """Ladder spacings, duty and per-channel Table II rows for a fading-Shepard synthesis.
@@ -568,12 +819,23 @@ class ShepardConfig:
         ``"auto"`` takes :func:`table_ii` from the spec; a mapping ``{channel: ChannelFade}``
         overrides individual channels on top of it (that is how the "simultaneous fading"
         comparison sets ``xi_y = 0``).
+    comb_offset:
+        Constant added to a channel's rung *frequencies* only (never to its fade coordinate).
+        ``"auto"`` (default) applies :func:`lattice_comb_offset` to the two ``B`` ladders, which
+        is what makes an even-``M`` Shepard array land on the same lattice as Eq. S19; a mapping
+        ``{channel: offset [Hz]}`` sets it by hand (``{}`` reproduces the pre-M5 behaviour).
+    switch_ramp:
+        Raised-cosine on/off ramp [s] applied to the ``p = 0`` (rectangular) rungs, anchored at
+        their own switching instants — :class:`SwitchRamped`, the mitigation for the splatter a
+        step-switched array ladder radiates.  ``0`` (default) is Table II verbatim.
     """
 
     delta_f_x: float
     delta_f_y: float
     eta: float = ETA_DEFAULT
     config: str | Mapping[str, ChannelFade] = "auto"
+    comb_offset: str | Mapping[str, float] = "auto"
+    switch_ramp: float = 0.0
 
     def __post_init__(self) -> None:
         for name in ("delta_f_x", "delta_f_y", "eta"):
@@ -583,6 +845,34 @@ class ShepardConfig:
                     f"ShepardConfig.{name} must be finite and positive, got {getattr(self, name)!r}"
                 )
             object.__setattr__(self, name, value)
+        ramp = float(self.switch_ramp)
+        if not math.isfinite(ramp) or ramp < 0.0:
+            raise ValueError(
+                f"ShepardConfig.switch_ramp must be finite and non-negative [s], "
+                f"got {self.switch_ramp!r}"
+            )
+        object.__setattr__(self, "switch_ramp", ramp)
+        if isinstance(self.comb_offset, str):
+            if self.comb_offset != "auto":
+                raise ValueError(
+                    f"ShepardConfig.comb_offset must be 'auto' or a {{channel: offset}} mapping, "
+                    f"got {self.comb_offset!r}"
+                )
+        elif isinstance(self.comb_offset, Mapping):
+            unknown = [name for name in self.comb_offset if name not in CHANNELS]
+            if unknown:
+                raise ValueError(
+                    f"ShepardConfig.comb_offset has unknown channel name(s) {unknown}; "
+                    f"valid names are {list(CHANNELS)}"
+                )
+            for name, value in self.comb_offset.items():
+                if not math.isfinite(float(value)):
+                    raise ValueError(f"comb_offset[{name!r}] must be finite, got {value!r}")
+        else:
+            raise TypeError(
+                f"ShepardConfig.comb_offset must be 'auto' or a mapping, "
+                f"got {type(self.comb_offset)!r}"
+            )
         if isinstance(self.config, str):
             if self.config != "auto":
                 raise ValueError(
@@ -633,6 +923,25 @@ class ShepardConfig:
         if isinstance(self.config, Mapping):
             fades.update(self.config)
         return fades
+
+    def comb_offsets(self, fades: Mapping[str, ChannelFade]) -> dict[str, float]:
+        """``{channel: frequency-only offset [Hz]}`` for the resolved ``fades``.
+
+        ``"auto"`` gives the ``A`` channels ``0`` and each ``B`` ladder
+        :func:`lattice_comb_offset` — the half-pitch correction that puts an even-``M`` array on
+        Eq. S19's lattice.  An explicit mapping is taken as given, with ``0`` for any channel it
+        omits, so ``comb_offset={}`` is the pre-M5 (uncorrected) comb.
+        """
+        if isinstance(self.comb_offset, Mapping):
+            return {name: float(self.comb_offset.get(name, 0.0)) for name in CHANNELS}
+        return {
+            name: (
+                0.0
+                if name.startswith("A")
+                else lattice_comb_offset(fades[name], self.spacing(name))
+            )
+            for name in CHANNELS
+        }
 
 
 def auto_config(
@@ -690,22 +999,33 @@ def auto_config(
     return ShepardConfig(delta_f_x=spacing["x"], delta_f_y=spacing["y"], eta=eta)
 
 
-def shepard_band_bound(fade: ChannelFade, delta_f: float, eta: float, lateral_span: float) -> float:
+def shepard_band_bound(
+    fade: ChannelFade,
+    delta_f: float,
+    eta: float,
+    lateral_span: float,
+    comb_offset: float = 0.0,
+) -> float:
     r"""Largest ``|f|`` a channel's *live* tones ever reach [Hz] — the Shepard claim.
 
     A rung is driven only while ``|g| < (m + eta) delta_f / 2``, and its frequency is
-    ``f = f_lat + g``, so
+    ``f = f_lat + g + comb_offset``, so
 
     .. math::
 
-        \max_{\text{live}} |f_\mu^{(n)}| \le \frac{(M+\eta)\Delta f}{2} + \max|f_{\text{lat}}|
+        \max_{\text{live}} |f_\mu^{(n)}| \le \frac{(M+\eta)\Delta f}{2}
+            + \max|f_{\text{lat}}| + |c_{\text{comb}}|
 
     **however large** ``int Z dt`` — hence ``f_Z`` — grows.  That is the whole claim of the
     scheme, and it is a property of the window, not of the trajectory: the ladder slides, the
     live window does not.  (The frequency *laws* of individual rungs are unbounded; they are
     simply multiplied by zero outside the window, and never launched by the transducer.)
+
+    The last term is :func:`lattice_comb_offset`'s half-pitch lattice correction, which
+    translates the live window bodily and so costs its own magnitude — ``delta_f / 2`` at worst,
+    and nothing at all for an odd-``M`` or single-tweezer axis.
     """
-    return 0.5 * (fade.m + eta) * delta_f + abs(lateral_span)
+    return 0.5 * (fade.m + eta) * delta_f + abs(lateral_span) + abs(comb_offset)
 
 
 # =============================================================================== the ladder
@@ -801,17 +1121,19 @@ def shepard_ladder(
     amp: float = 1.0,
     phases: str | ArrayLike = "schroeder",
     rng: np.random.Generator | None = None,
+    comb_offset: float = 0.0,
+    switch_ramp: float = 0.0,
 ) -> ChannelWaveform:
     r"""One channel's fading-Shepard ladder (Eqs. S24-S28).
 
     Every live rung (:func:`active_indices`) becomes a
     :class:`~aodl.waveform.tones.ToneTrack` whose frequency law is
 
-        ``f^{(n)}(t) = f_lat(t) + f_Z(t) + (n + xi) delta_f``
+        ``f^{(n)}(t) = f_lat(t) + f_Z(t) + (n + xi) delta_f + comb_offset``
 
     and whose envelope is the :class:`FadeZoneEnvelope` on ``g^{(n)} = f_Z + (n + xi)
-    delta_f`` — the same polynomial minus the lateral term, which is why a lateral move does
-    *not* shift the fade schedule.
+    delta_f`` — the same polynomial minus the lateral term *and minus the comb offset*, which
+    is why neither a lateral move nor the lattice correction shifts the fade schedule.
 
     Parameters
     ----------
@@ -826,6 +1148,12 @@ def shepard_ladder(
     eta, amp, phases, rng:
         Fade duty, peak amplitude, and the ladder's phase convention — ``"schroeder"``
         (Eq. S28 by rung index), ``"zero"``, ``"random"`` or an explicit per-rung array.
+    comb_offset:
+        Constant [Hz] added to the rung frequencies and to nothing else
+        (:func:`lattice_comb_offset`): the whole comb translates, the schedule does not move.
+    switch_ramp:
+        Raised-cosine on/off ramp [s] wrapped around each rung's window
+        (:class:`SwitchRamped`).  ``0`` (default) leaves the Table II window as it is.
 
     Returns
     -------
@@ -838,15 +1166,19 @@ def shepard_ladder(
         )
     indices = active_indices(f_z, fade, delta_f, eta)
     phi = _resolve_ladder_phases(phases, indices, fade.m, rng)
+    comb = float(comb_offset)
+    ramp = float(switch_ramp)
     tones = []
     for n, phase0 in zip(indices, phi, strict=True):
         g = f_z.offset((float(n) + fade.xi) * delta_f)
+        window = FadeZoneEnvelope(g=g, delta_f=delta_f, eta=eta, p=fade.p, m=fade.m, amp=float(amp))
+        env: FadeZoneEnvelope | SwitchRamped = window
+        if ramp > 0.0:
+            env = SwitchRamped(base=window, ramp=ramp)
         tones.append(
             ToneTrack(
-                freq=lateral + g,
-                env=FadeZoneEnvelope(
-                    g=g, delta_f=delta_f, eta=eta, p=fade.p, m=fade.m, amp=float(amp)
-                ),
+                freq=(lateral + g).offset(comb),
+                env=env,
                 phase0=float(phase0),
             )
         )
@@ -860,14 +1192,17 @@ __all__ = [
     "INDEX_EPS",
     "PHASE_MODES",
     "SLOPE_CLAMP",
+    "SWITCH_FLATNESS_SHAPE",
     "ChannelFade",
     "FadeZoneEnvelope",
     "ShepardConfig",
+    "SwitchRamped",
     "active_indices",
     "auto_config",
     "clamp_floor",
     "fade_window",
     "ladder_phases",
+    "lattice_comb_offset",
     "poly_crossings",
     "poly_range",
     "shepard_band_bound",

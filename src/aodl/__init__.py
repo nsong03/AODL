@@ -39,12 +39,21 @@ order (``docs/ARCHITECTURE.md`` §1)::
     forever = TrajectorySpec(array=ArraySpec(1, 1), moves=(Lift(10 * um, 60 * us), Hold(1 * ms)))
     wfs = synthesize(forever, p, shepard="auto")          # or shepard=ShepardConfig(8e6, 6.5e6)
 
+    # ... or, the product front door (M5): one call from the ask to the deliverables
+    from aodl import plan_motion
+
+    plan = plan_motion(trajectory)      # picks Eq. S19 or the fading ladders for you
+    print(plan.report.summary())        # band usage, axial budget, fade schedule, caveats
+    plan.save("move.npz")               # parametric waveform for the AWG
+    plan.movie("move.mp4")              # ... and what the atoms will see
+
 Everything else stays one import away (``from aodl.device.aodl import build_terms``,
 ``from aodl.field import focal``, ...); SI units are used throughout, with the ``aodl.units``
 constants for boundary code.
 """
 
 from . import params, units
+from .api import FadeEvent, MotionPlan, PlanReport, band_usage, fade_schedule, plan_motion
 from .device.aodl import TermArray, build_terms
 from .engine import SimResult, simulate
 from .field.focal import FrameGrid, intensity_frame, intensity_slice_xz
@@ -65,7 +74,9 @@ from .waveform.shepard import (
     ChannelFade,
     FadeZoneEnvelope,
     ShepardConfig,
+    SwitchRamped,
     fade_window,
+    lattice_comb_offset,
     shepard_band_bound,
     shepard_ladder,
     table_ii,
@@ -75,6 +86,7 @@ from .waveform.synthesis import (
     array_tones,
     f_z_ramp,
     max_z_integral,
+    requested_z_integral,
     schroeder_phases,
     synthesize,
 )
@@ -98,16 +110,20 @@ __all__ = [
     "ChannelWaveform",
     "ConstantEnvelope",
     "Envelope",
+    "FadeEvent",
     "FadeZoneEnvelope",
     "FrameGrid",
     "Hold",
     "Lift",
+    "MotionPlan",
     "OpticsParams",
     "PiecewisePoly",
+    "PlanReport",
     "ShepardConfig",
     "SimResult",
     "SmoothOnOff",
     "SpotMetrics",
+    "SwitchRamped",
     "TermArray",
     "ToneTrack",
     "TrajectorySpec",
@@ -117,18 +133,23 @@ __all__ = [
     "add_common_ramp",
     "array_tones",
     "auto_grid",
+    "band_usage",
     "build_terms",
     "default_1030",
     "f_z_ramp",
+    "fade_schedule",
     "fade_window",
     "intensity_frame",
     "intensity_slice_xz",
+    "lattice_comb_offset",
     "max_z_integral",
     "measure",
     "paper_808",
     "params",
+    "plan_motion",
     "ramps",
     "render_movie",
+    "requested_z_integral",
     "schroeder_phases",
     "shepard_band_bound",
     "shepard_ladder",

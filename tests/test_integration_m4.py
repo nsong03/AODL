@@ -410,12 +410,19 @@ def test_the_unhurried_user_story_synthesizes_tracks_and_stays_in_band(params103
     assert wfs.n_tones > 4 * spec.array.mx  # a ladder per channel, not one tone per column
 
     pitch = spec.array.pitch(params)
+    # Eq. S19 centres an M-tone ladder, so an *even* M lands on half-integer multiples of the
+    # pitch, and WO-17 §2.1's comb offset puts the Shepard columns there too: the lattice the
+    # nodes live on is half a pitch off the array centre itself.  Anchoring `_lattice` on that
+    # lattice keeps the ten programmed columns at the same indices as before the correction.
+    half = tuple(
+        0.5 * p if m % 2 == 0 else 0.0 for p, m in zip(pitch, (STORY_ARRAY.mx, STORY_ARRAY.my))
+    )
     times = np.linspace(tau, spec.duration, 12)
     worst = dict(residual=0.0, axial=0.0, astig=0.0, spread=0.0)
     for t in times:
         t_c = float(t) - 0.5 * tau
         terms = build_terms(wfs, float(t))
-        centre = (float(x(t_c)), float(y(t_c)))
+        centre = (float(x(t_c)) - half[0], float(y(t_c)) - half[1])
         nodes, residual = _lattice(terms, optics, centre, pitch)
         assert {i for i, _ in nodes} >= set(range(-4, 6))  # the 10 programmed columns, always
         assert {j for _, j in nodes} >= set(range(-4, 6))
