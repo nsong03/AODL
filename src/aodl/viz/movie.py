@@ -326,8 +326,8 @@ def render_movie(
         Draw the XZ slice side panel.
     xz_row_y:
         Y row the XZ slice cuts through [m].  ``None`` (default) tracks the frame's own
-        power-weighted mean spot Y, so the panel follows the tweezers instead of watching an
-        empty row when the array moves along y.
+        brightest row (:meth:`aodl.engine.SimResult.spot_row`), so the panel follows the
+        tweezers instead of watching an empty row when the array moves along y.
     xz_shape:
         ``(nx, nz)`` samples of the XZ panel; ``None`` uses ``(XZ_NX, XZ_NZ)``.  The panel is
         the one part of a frame that cannot be patched — a spot sweeps *through* focus along

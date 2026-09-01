@@ -200,8 +200,25 @@ class SimResult:
         ]
 
     def spot_row(self, i: int) -> float:
-        """Power-weighted mean spot Y of frame ``i`` [m] — the row an XZ slice should cut."""
-        return _power_weighted(self.metrics[range(self.n_frames)[i]], "y")
+        """Lab Y of the tweezer row an XZ slice of frame ``i`` should cut [m].
+
+        The power-weighted *mean* Y is the array's **centre**, which for an even number of
+        rows falls in the gap *between* two of them — 6.3 waists from either for the 10x10
+        user story.  A slice there sees no trap at all, only their far-field tails, and
+        because a defocused spot spreads in y faster than it dims, the tails *off* the focal
+        plane outshine the ones in it: the panel then draws the light nowhere near the array's
+        own Zbar.  So the mean is snapped onto the nearest Y that actually carries a tweezer,
+        ignoring groups below half the frame's peak power so that a faint IM3 ghost cannot
+        claim the row.  A single tweezer, and any array with an odd, symmetric row count, is
+        unaffected: the mean already sits on a row.
+        """
+        metrics = self.metrics[range(self.n_frames)[i]]
+        if not metrics:
+            return 0.0
+        centre = _power_weighted(metrics, "y")
+        cut = 0.5 * max(m.power for m in metrics)
+        bright = [m for m in metrics if m.power >= cut] or list(metrics)
+        return min(bright, key=lambda m: abs(m.y - centre)).y
 
     def slice_xz(
         self,
@@ -212,8 +229,7 @@ class SimResult:
     ) -> Float:
         """Intensity on the ``(X, Z_lab)`` plane at ``Y = y0``, shape ``(nz, nx)``.
 
-        ``y0 = None`` uses the frame's power-weighted mean spot Y, i.e. the row the tweezers
-        actually sit on.
+        ``y0 = None`` uses :meth:`spot_row`, i.e. the row the tweezers actually sit on.
         """
         if y0 is None:
             y0 = self.spot_row(i)
