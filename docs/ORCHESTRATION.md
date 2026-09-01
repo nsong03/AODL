@@ -48,3 +48,18 @@ M1 verification report lands.
 | 2026-08-31 | Work orders WO-01…WO-06 authored; Wave A dispatched. |
 | 2026-08-31 | Wave A (WO-01) accepted: 20 tests, S11 mapping vs quadrature ~1e-15; commit `1398fc8`. Wave B (WO-02/03/04) dispatched in parallel. |
 | 2026-09-01 | Wave B accepted: WO-02 (46 tests, `ad1d09f`), WO-03 + WO-04 (40 tests, `6d34333`). Architect rulings: TermArray.alpha is envelope-normalized (α0=1, envelope in `c` via line amps); FrameGrid stays in `field/focal.py` (engine re-exports); per-group `power` stays incoherent until M4. Wave C (WO-05) dispatched. |
+| 2026-09-01 | Wave C accepted (WO-05, `0392e1b`): 122 tests, zero cross-module reconciliations; M1 notebook + movie. Wave D verdict: **M1 ACCEPTED** (WO-06, fix `b2a277d`: fill-transient patch cropping). |
+| 2026-09-01 | M2 work orders WO-07/08/09 authored. Architect rulings: IM3 line table fixed in WO-07 §2 (Bessel-consistent); GROUP_TOL 10 kHz → 1 kHz + cluster-diameter cap; TermLike members become read-only properties + mypy gate (WO-08). Wave E (WO-07) dispatched. |
+
+## Backlog (tracked findings, not yet scheduled)
+
+- **M3 prerequisite**: two-sided aperture window (counter-propagating pair partially
+  filled from opposite sides currently raises `NotImplementedError`; needs
+  `∫_{u0}^{u1} = E_n(u0) − E_n(lower at u1)` difference moments + `device/aodl.py`
+  interval intersection). Goes in the M3 device work order.
+- **M4**: coherent (Gram-matrix) per-group `power` option for degenerate shadow-tweezer
+  pairs; fast-fade α₁ tilt-term power correction (~4% at 1 ms ramps → grows for Shepard
+  fades) — quantify in the M4 notebook.
+- Docs drift: ARCHITECTURE.md §2 says calibrations live in `units.py` (they live on
+  `AODLParams`); §3 `simulate(WaveformSet, params, times)` signature is stale
+  (`params` comes from `wfs.params`). Fix on next docs touch.
