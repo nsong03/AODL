@@ -363,17 +363,25 @@ class FadeZoneEnvelope:
     10 µm hold, a line clamped at ``A = 1e-3`` would contribute some ``10^2`` **times** a
     full line's power instead of ``10^-6`` of it.  So the floor that does the work is the
     slope rule :data:`SLOPE_CLAMP`: ``|A'/A| <= p * SLOPE_CLAMP * dtheta/dt`` caps the
-    log-derivative at a few times the fade's own rate, which bounds the residual weight at
+    log-derivative at a few times the fade's own rate.  Writing ``S =`` :data:`SLOPE_CLAMP`,
+    the clamp engages where ``cos theta = (1 + S^2)^{-1/2}``; the line there still carries
+    ``A^2 = (1 + S^2)^{-p}`` and its tilt term is pinned at ``p S (pi/2) rho``, so the weight
+    it goes on contributing is *estimated* by
 
-        ``~ SLOPE_CLAMP * (p (pi/2) rho)^2 / 4``,
+        ``S^2 (1 + S^2)^{-p} (p (pi/2) rho)^2 / 4``,
         ``rho = (w_in / v) / T_fade``,  ``T_fade = eta * delta_f / |gdot|``
 
-    — the fraction of the fade that happens while the beam crosses one input radius.  That
-    is the *physical* validity condition of the whole degree-2 aperture expansion, not an
-    artefact of the clamp: a fade much faster than the beam transit apodizes the pupil
-    beyond anything a quadratic can describe.  Keep ``rho`` small (a wide ``delta_f``,
-    which is also the cheap choice — see :func:`auto_config`) and the clamp is invisible:
-    ``rho = 0.05`` bounds it at ``1e-3`` of a line.  Where it does bite it *freezes* the
+    — ``rho`` being the fraction of the fade that happens while the beam crosses one input
+    radius.  Read that as an **estimate, not a bound**: it keeps only the ``alpha1`` tilt term
+    of a single axis, and the M4 verification pass measured a residual weight of ``8.6e-4``
+    where it estimates ``6.1e-4``, at the design point of ``examples/05`` (``p = 1/2``,
+    ``eta = 1/2``, ``rho = 0.0373`` — an 8 MHz ladder holding 10 µm), i.e. some 30 %
+    optimistic.  What it does capture is the scaling, and that ``rho`` is the *physical*
+    validity condition of the whole degree-2 aperture expansion rather than an artefact of the
+    clamp: a fade much faster than the beam transit apodizes the pupil beyond anything a
+    quadratic can describe.  Keep ``rho`` small (a wide ``delta_f``, which is also the cheap
+    choice — see :func:`auto_config`) and the clamp stays negligible: at ``rho = 0.05`` the
+    estimate is of order ``1e-3`` of a line.  Where it does bite it *freezes* the
     apodization shape rather than letting a polynomial extrapolate an envelope that has
     already fallen by a factor ``1/A`` across the beam, which no ``1 + a1 u + a2 u^2``
     can represent.
@@ -961,6 +969,21 @@ def auto_config(
     :data:`AUTO_FILL` of whatever headroom the lateral term leaves, which is the widest
     ladder that still fits — and the widest ladder is the cheapest one, since the rung count
     goes as ``(f_Z span) / delta_f``.
+
+    Warning
+    -------
+    **The two axes come back with different spacings whenever their lateral spans differ**,
+    which for a free axis is the common case: each axis is sized against *its own* headroom,
+    so a move of 40 µm in ``x`` and 25 µm in ``y`` gives ``delta_f_x < delta_f_y``.  Table II's
+    interlacing (``xi_y = 1/2``) then only holds *on average*: the two hand-over schedules have
+    periods ``delta_f_x / |fdot_Z|`` and ``delta_f_y / |fdot_Z|``, which beat against each
+    other, so the y fade zones drift through the x ones and some hand-overs have both axes
+    fading at once — the sixteen-ray situation of Fig. S6, with its phase-sensitive
+    (``power_coherent``) trap depth, instead of the single-axis ``+- delta_f`` shadow pair
+    (module docstring, ``examples/05`` §5).  Interlacing is exact only for
+    ``delta_f_x == delta_f_y``; to force that, skip this function and pass an explicit
+    :class:`ShepardConfig` with one spacing on both axes — as long as it clears
+    :func:`shepard_band_bound` on the tighter axis, which is what buying exactness costs.
 
     Parameters
     ----------
