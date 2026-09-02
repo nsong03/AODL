@@ -397,8 +397,11 @@ rather than a `TrajectorySpec`.
   and intermodulation, so those show up as real residuals rather than as errors: a 10×10
   Shepard array at `drive_strength = 0.30` has a crest factor of 4.6 and its per-trap intensity
   spreads by ~20 % from Eqs. S20–S22, with the spots widening up to 8 % mid-hand-over
-  (`ρ = 0.30`, §6.4). Raise `uniformity`/`waist` for such a drive, or drive it more weakly —
-  the spread scales as `C²`.
+  (`ρ = 0.30`, §6.4). Raise `uniformity`/`waist` for such a drive. Driving it more weakly
+  removes only the Eqs. S20–S22 part, which is most of it but not all: that part scales as
+  `C²`, while the fade-speed part does not depend on `C` at all and leaves a floor of ~4 %
+  on the spread and the whole 8 % on the waist (measured on the flagship down to
+  `drive_strength = 0.003`). Widen `Δf` — i.e. lower `ρ` — to move the floor.
 
 Frames before `2τ`, or with an aperture still filling, are marked *transient* and leave the
 waist and uniformity gates; while an aperture is genuinely filling the positions leave them

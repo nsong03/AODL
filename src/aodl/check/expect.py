@@ -484,9 +484,11 @@ class SimResultLike(Protocol):
     """Structural contract for :class:`aodl.engine.SimResult`.
 
     The checker shares *no* code with the simulator, so the comparison is made through a
-    protocol and the concrete class is imported only under ``TYPE_CHECKING`` — the
-    :class:`aodl.field.focal.TermLike` precedent.  Anything carrying frame times and a
-    per-frame list of spot metrics works, including a hand-built stub.
+    protocol and the concrete class is never imported — not even under ``TYPE_CHECKING``, since
+    the source scan of ``tests/test_check_independence.py`` rightly does not care why an import
+    is written (see this module's own docstring; :class:`aodl.field.focal.TermLike` is the
+    precedent for consuming another layer's objects structurally).  Anything carrying frame
+    times and a per-frame list of spot metrics works, including a hand-built stub.
     """
 
     @property

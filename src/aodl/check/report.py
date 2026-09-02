@@ -26,10 +26,16 @@ trap *is*.  The window is
                         \frac{0.2\,w_0}{\max|v_\text{lat}|}\Big),
 
 two full cycles of the slowest beat, capped so that the array cannot move more than a fifth of
-a waist while the shutter is open — without that cap a fast traverse would report wide, dim,
-displaced spots for a perfectly good drive, and the checker would fail the very manoeuvre the
-paper is about.  The instants inside it are the golden-ratio sequence of
-:func:`aodl.check.transform.subtimes`, which never lines up with an array's regular beat comb.
+a waist while the shutter is open, with the instants inside it the golden-ratio sequence of
+:func:`aodl.check.transform.subtimes` — which never lines up with an array's regular beat comb.
+That is the **fallback** (:func:`_beat_window`).  When the drive's same-node beats form a
+commensurate comb — every fading array's do — :func:`_comb_window` takes precedence with one
+full comb period and a *uniform* schedule, which annihilates each of those beats exactly; that
+window is chosen for its beats alone and is **not** motion-capped (the ``docs/guide.md``
+flagship's is 5 µs, over which the array travels 1.4 ``w_0``).  Either way the frame is
+measured in the array's own moving frame (:func:`_desmear_shifts`), so what the smear cap
+protects against — a fast traverse reported as a wide, dim, displaced spot — is removed
+by construction rather than by shortening the window.
 
 **What a PASS certifies, and what it does not.**  Verdict-bearing metrics are the ones a shared
 model error cannot fake: lateral and axial position, the astigmatic interval, the fitted
@@ -441,6 +447,10 @@ def _decimation(grid: ApertureGrid, params: AODLParams, mode: PupilMode, shift: 
     transform ~18x cheaper, which is the difference between a checker one runs and one one does
     not.  ``weak`` mode's grid is already six times coarser and is left alone.
 
+    The band is read from the **widest** of the four channels, not from one of them: per-channel
+    limits are a documented knob (``docs/PLAN.md`` decision 6), and a channel wider than the one
+    sampled would be decimated below its own Nyquist and alias into the pupil silently.
+
     ``shift`` is the largest co-moving de-smear displacement the frame will apply
     (:func:`_check_frame`).  That is a pupil phase ramp of spatial frequency ``shift / (lambda
     F)`` — 112 mm^-1 for three quarters of a micron — so it has to fit inside the decimated
@@ -448,9 +458,9 @@ def _decimation(grid: ApertureGrid, params: AODLParams, mode: PupilMode, shift: 
     """
     if mode == "weak":
         return 1
-    lo, hi = params.channels["Ax"].band
+    widest = max(hi - lo for lo, hi in (aod.band for aod in params.channels.values()))
     optics = params.optics
-    content = 2.0 * 1.15 * 1.25 * 0.5 * (hi - lo) / params.sound_speed
+    content = 2.0 * 1.15 * 1.25 * 0.5 * widest / params.sound_speed
     content += abs(shift) / (optics.wavelength * optics.focal_length)
     limit = 1.0 / (2.0 * DECIMATION_SAFETY * content)
     factor = 1
@@ -636,8 +646,11 @@ def _comb_window(beats: tuple[float, ...], k: int) -> float | None:
 
     ``W = 1 / gcd(beats)`` is that window, computed on integer hertz; ``None`` means there is no
     usable one, either because the comb is empty, or because its greatest common divisor is so
-    fine that the window would alias the fastest beat onto DC (``b W >= k``), and then the
-    golden-ratio fallback is the honest answer.
+    fine that the schedule would no longer resolve the fastest beat.  Aliasing onto DC needs
+    ``b W = k``; the test below refuses at the Nyquist half of that (``b W > k / 2``), and then
+    the golden-ratio fallback is the honest answer.  The threshold is why the choice of
+    schedule depends on ``k``: the flagship's ``b W`` reaches 23, so it takes the uniform comb
+    at ``k >= 48`` and the fallback below that.
     """
     if not beats:
         return None
