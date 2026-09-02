@@ -280,14 +280,18 @@ constants — enforced by a source scan (`tests/test_check_independence.py`).
 chirp's second derivative vanishes — and the checker *measures* the dropped cubic (coma) term
 where they are not (5 % mid-ramp on the M3 story); ✓ positions agree to 1e-3 w₀ and per-trap
 powers to 3e-4; ✓ in `bragg_band` mode the compression comes out `(2J₁(C)/C)²` to 1e-5 and
-degenerates to the weak model as `C²`; ✓ the guide's flagship 10×10 Shepard drive checks out at
-the §4 tolerances below; ✓ three deliberate corruptions of a 3×3 drive fail, each naming its
-metric: an `Ax` chirp-sign flip → `lateral` + `astigmatism`, a dropped `Bx` ladder tone →
-`missing trap`, 5 % on one `Bx` tone → `uniformity` (and only that).
+degenerates to the weak model as `C²`; ✓ the guide's flagship 10×10 Shepard drive passes with
+its *position* metrics at the default tolerances below and its intensity metrics at
+drive-justified openings (waist 12 %, uniformity 30 % — a 30-rung ladder at C = 0.3 carries a
+real ~20 % IM3 intensity spread plus a ρ = 0.30 fade-apodization waist ripple; the openings
+are pinned from both sides by the test, and their reduced fault-detection power is a tracked
+WO-23 finding, F-2, reconciled in WO-24); ✓ three deliberate corruptions of a 3×3 drive fail,
+each naming its metric: an `Ax` chirp-sign flip → `lateral` + `astigmatism`, a dropped `Bx`
+ladder tone → `missing trap`, 5 % on one `Bx` tone → `uniformity` (and only that).
 
-Verdict tolerances, relative in every case (`aodl.check.report.Tolerances`): lateral 0.05 w₀,
-axial and |ΔF| 0.05 z_R, waist 2 %, per-trap uniformity 3 %, off-lattice light 1 % and
-on-lattice light 10 % of the median trap peak, missing trap below 25 % of it. Report-only, by
+Default verdict tolerances, relative in every case (`aodl.check.report.Tolerances`): lateral
+0.05 w₀, axial and |ΔF| 0.05 z_R, waist 2 %, per-trap uniformity 3 %, off-lattice light 1 %
+and on-lattice light 10 % of the median trap peak, missing trap below 25 % of it. Report-only, by
 construction: the absolute intensity scale (a uniform four-channel gain is divided out by the
 render's global normalization and is optically invisible), the `sim_delta` diff against the
 simulator, `beat_std`, and the out-of-band splatter fraction.
