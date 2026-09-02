@@ -187,10 +187,13 @@ class ApertureGrid:
                 f"the pinned aperture grid reaches only {half_span / w_in:.2f} w_in "
                 f"({half_span / mm:.3f} mm at w_in = {w_in / mm:.3f} mm) but at least "
                 f"{MIN_HALF_SPAN_W_IN} w_in is needed to truncate the input Gaussian below "
-                "1e-8.  The span is 24576 v / (8 f_center); this hardware "
-                f"(v = {sound_speed:g} m/s, f_center = {f_center:g} Hz) is too fast or too "
-                "high-frequency for it, so the grid would clip the beam.  Build an "
-                "ApertureGrid explicitly if you really mean to."
+                "1e-8.  The half-span is 1536 v / f_center — 1536 acoustic wavelengths — so it "
+                f"shrinks with a *slower* sound speed or a *higher* carrier, and this hardware "
+                f"(v = {sound_speed:g} m/s, f_center = {f_center:g} Hz) has too short a "
+                f"wavelength (Lambda = {sound_speed / f_center / mm:.4g} mm) for a beam this "
+                "wide, so the grid would clip it.  Widen the grid (a lower f_center or a faster "
+                "crystal), narrow the beam, or build an ApertureGrid explicitly if you really "
+                "mean to."
             )
         u = (np.arange(n, dtype=np.float64) - n // 2) * du
         return cls(u=u, du=du)

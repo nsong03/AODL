@@ -361,9 +361,11 @@ rather than a `TrajectorySpec`.
 | Field | What it holds |
 |-------|---------------|
 | `passed`, `failures` | the verdict, and one line per violated gate — each naming its metric first |
-| `table` | `{column: array}`, one row per (frame, trap): fitted `x`, `y`, `z_lab`, `delta_f`, `wx`, `wy`, `peak`, `power`, `beat_std`, the residuals `dx`/`dy`/`dz`, model-free profile moments, and the flags saying which gates applied |
+| `table` | `{column: array}`, one row per (frame, trap): fitted `x`, `y`, `z_lab`, `delta_f`, `wx`, `wy`, `peak`, `power`, `beat_std`, the residuals `dx`/`dy`/`dz`, model-free profile moments, each trap's `uniformity_median` over the frames, and the flags saying which gates applied |
 | `blobs` | every canvas maximum that is *not* a requested trap, with `on_lattice` |
 | `worst()` | `{metric: (residual, tolerance, offender)}` — the numbers `summary()` prints |
+| `median_uniformity()` | worst per-trap **time median** of the intensity deviation, and whose |
+| `gated_fraction` | `{metric: gated rows / rows}` for `waist`, `uniformity`, `uniformity_median` — what fraction of the array each intensity gate actually judged |
 | `notes` | exclusions applied, the blind spot, the drive-specific caveats |
 | `out_of_band`, `sim_delta` | report-only diagnostics (splatter; a diff against `plan.simulate()`) |
 
@@ -375,8 +377,27 @@ rather than a `TrajectorySpec`.
 | `axial` | 0.05 | the Rayleigh range `z_R`; also gates \|ΔF\| |
 | `waist` | 0.02 | `w₀`, on non-transient, non-fade frames |
 | `uniformity` | 0.03 | each frame's median trap peak, non-fade frames |
+| `uniformity_median` | `None` | the same deviation, medianed **over the frames**; `None` measures it without gating (see below) |
 | `blob_off_lattice` / `blob_on_lattice` | 0.01 / 0.10 | the median trap peak |
+| `blob_fading` | 1.2 | the median trap peak, for on-lattice light on a *fading* drive — whitelisted, but not above a real trap's depth |
 | `missing_trap` | 0.25 | the median trap peak, below which a trap is "missing" |
+| `require_coverage` | `False` | not a threshold: fail when an intensity gate judged **no row at all** |
+
+**Two ways to read the intensity pattern.** `uniformity` asks, one frame at a time, whether a
+trap is off its frame's median. `uniformity_median` asks whether it is off at *every* frame —
+the median of that deviation over the frames a trap was gated at, `nan` for a trap gated on
+fewer than two. The two have different blind spots: a one-frame excursion medians away, and a
+standing offset does not. On an Eq. S19 drive the second is the sharper instrument — one tone
+5 % down gives a median of 0.098 against a clean 0.012, an 8× separation
+(`tests/test_check_verdict.py`) — so set `uniformity_median` there and get a second gate.
+
+It is `None` by default because on a **fading-Shepard** drive it separates nothing. The ladder
+slides through the array, so a faulted rung feeds a different column at every frame: on the
+flagship, one rung at 80 % amplitude (a 36 % intensity fault) reads 0.28 at one frame and is
+erased by the median exactly — clean and corrupted both measure 0.137, which is the *static*
+Eqs. S20–S22 pattern rather than noise. That fault also passes the opened 0.30 per-frame gate,
+so it is currently uncaught, and `tests/test_check_flagship.py` carries it as a strict `xfail`
+rather than pretending otherwise.
 
 **What a PASS certifies — and what it does not.**
 
@@ -393,15 +414,34 @@ rather than a `TrajectorySpec`.
   holds every *interior* node exactly flat through a hand-over (measured to 1e-15), but the
   ladder slides: the outermost node trades its light with the extended grid (§6.6/§6.7), so
   the intensity gates skip the two edge lines and the report names them.
+* **Not a small fading array's intensity at all — check `gated_fraction`.** That edge-line
+  exemption costs the perimeter, which on a large array is a fringe (the 10×10 flagship keeps
+  8×8 = 64 % of its rows) and on a small one is everything. A fading **2×2** has no interior
+  trap: `waist`, `uniformity` and `uniformity_median` gate *zero* rows and the drive passes them
+  by having nothing to say. The report never hides this — `gated_fraction` is `{…: 0.0}`,
+  `summary()` prints `NONE GATED` and a note spells it out — and passing
+  `Tolerances(require_coverage=True)` turns it into a failure. Small fading arrays also need
+  their intensity gates *opened* per drive on physics grounds: a clean fading 3×3 on the
+  flagship's own trajectory measures `waist` 0.080 and `uniformity` 0.069 against defaults of
+  0.02/0.03, on the one interior trap (11 % of its rows) it has left.
+* **Not a timing skew below a tenth of a microsecond.** Delay one channel's samples by `δ` and
+  every trap it feeds moves by `|dX| = deflection_scale · |ḟ| · δ`, with `ḟ` that channel's own
+  frequency slew — so the checker sees a skew only once that product clears the `lateral` gate.
+  Measured on the flagship (its `Ax` buffer rolled by `δ`): 0.030 `w₀` at 0.05 µs, 0.149 at
+  0.30 µs, 0.58 at 1.22 µs, i.e. the default 0.05 `w₀` gate is crossed at **≈ 0.1 µs**. A
+  *common* delay on all four channels is a pure time shift of the whole drive and is harder
+  still: it clears `lateral` only at ≈ 0.15 µs and `axial` only at ≈ 1.22 µs. Below those a
+  skew is invisible, which matters because a skew is exactly what a mis-wired AWG produces.
 * **Not the crystal's own nonlinearity.** The default `bragg_band` model *includes* compression
   and intermodulation, so those show up as real residuals rather than as errors: a 10×10
-  Shepard array at `drive_strength = 0.30` has a crest factor of 4.6 and its per-trap intensity
-  spreads by ~20 % from Eqs. S20–S22, with the spots widening up to 8 % mid-hand-over
-  (`ρ = 0.30`, §6.4). Raise `uniformity`/`waist` for such a drive. Driving it more weakly
-  removes only the Eqs. S20–S22 part, which is most of it but not all: that part scales as
-  `C²`, while the fade-speed part does not depend on `C` at all and leaves a floor of ~4 %
-  on the spread and the whole 8 % on the waist (measured on the flagship down to
-  `drive_strength = 0.003`). Widen `Δf` — i.e. lower `ρ` — to move the floor.
+  Shepard array at `drive_strength = 0.30` renders with a normalization factor (peak over
+  single-tone amplitude) of 4.59 and its per-trap intensity spreads by ~20 % from Eqs. S20–S22,
+  with the spots widening up to 8 % mid-hand-over (`ρ = 0.30`, §6.4). Raise
+  `uniformity`/`waist` for such a drive. Driving it more weakly removes only the Eqs. S20–S22
+  part, which is most of it but not all: ~82 % of the spread scales as `C²`, while the
+  fade-speed part does not depend on `C` at all and leaves a floor of ~3.8 % on the spread and
+  the whole 8 % on the waist (measured on the flagship down to `drive_strength = 0.003`). Widen
+  `Δf` — i.e. lower `ρ` — to move the floor.
 
 Frames before `2τ`, or with an aperture still filling, are marked *transient* and leave the
 waist and uniformity gates; while an aperture is genuinely filling the positions leave them
@@ -582,9 +622,17 @@ the constants of `aodl.units`:
 | axial gate `0.05 z_R` | 0.1732 µm | `0.05 * P.optics.rayleigh / um` |
 
 Measured by the checker and quoted in §5.5: the flagship's ~20 % per-trap intensity spread and
-8 % waist swing at `drive_strength = 0.30` (`tests/test_check_flagship.py`); the 0.07 w₀
-departure from Table I on a 25/30/25 µs move, and the 1e-9 field agreement with the simulator
-at a min-jerk midpoint (`tests/test_check_weak_vs_sim.py`).
+8 % waist swing at `drive_strength = 0.30`, its 0.137 time-median intensity pattern — the same
+clean or with a rung at 80 % — and its 64 % intensity-gate coverage
+(`tests/test_check_flagship.py`); the 0 % coverage of a fading 2×2 and the 0.012 → 0.098
+time-median separation of a 5 % tone fault on the Eq. S19 3×3 (`tests/test_check_verdict.py`);
+the 0.07 w₀ departure from Table I on a 25/30/25 µs move, and the 1e-9 field agreement with the
+simulator at a min-jerk midpoint (`tests/test_check_weak_vs_sim.py`).
+
+Measured in the WO-24 gate-policy pass and quoted in §5.5: the flagship's 4.59 render
+normalization factor (peak over single-tone amplitude); the `waist` 0.080 / `uniformity` 0.069
+/ 11 % coverage of a clean fading 3×3 on the flagship trajectory; the ≈ 0.1 µs one-channel and
+≈ 0.15 µs (`lateral`) / ≈ 1.22 µs (`axial`) common timing-skew detection thresholds.
 
 Measured elsewhere and quoted above: ρ ≈ 0.057 for 1 % flatness and 0.43 % at 8 MHz
 (`examples/05` §7); ρ = 0.30 and a 7.6 % per-hand-over ripple for the array of

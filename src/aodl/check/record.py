@@ -15,8 +15,9 @@ channel imprints on the light is (Eq. S1)
 
     C\,V_\mu(t) = \text{drive\_strength} \times \text{normalization} \times \text{sample},
 
-so a checker that forgets the factor mis-scales the *nonlinear* pupil model by exactly the
-drive's crest factor — 2.70 for a 3x3 fading-Shepard drive at the product defaults, which
+so a checker that forgets the factor mis-scales the *nonlinear* pupil model by exactly that
+**normalization factor** — the render's peak over a single tone's amplitude, 2.70 for a 3x3
+fading-Shepard drive at the product defaults (4.59 for the ``docs/guide.md`` flagship), which
 evaluates the ``2 J_1(C)/C`` fundamental compression at ``C = 0.30`` instead of ``0.81`` and
 so reports a 1.1 % loss where the crystal has 8.0 %.  The linear (``weak``) model is immune,
 which is precisely why forgetting it is a silent error.  :attr:`SampleRecord.drive` is the

@@ -57,6 +57,15 @@ particular.  On a fading-Shepard drive the array's two **edge** lines on each fa
 the intensity gates as well: the ``p_A + p_B = 1`` identity holds every *interior* node exactly
 flat through a hand-over, while the outermost node trades its light with the extended grid
 (``docs/guide.md`` §6.6-§6.7) — documented physics, not a fault.
+
+Every one of those exemptions narrows what a PASS is *about*, so the report counts them:
+:attr:`CheckReport.gated_fraction` says what fraction of the rows each intensity gate actually
+judged, and a metric that judged **none** — a 2x2 fading array, whose edge lines are its whole
+perimeter — gets a note saying so and, under :attr:`Tolerances.require_coverage`, a failure.
+The intensity pattern is read twice over: once per frame, and once as each trap's *time median*
+(:meth:`CheckReport.median_uniformity`), which is what tells a fault that holds still apart from
+hand-over ripple that does not.  The median is measured on every check and gated only when
+:attr:`Tolerances.uniformity_median` is set, for the reason that method documents.
 """
 
 from __future__ import annotations
@@ -148,15 +157,31 @@ CHECK_TABLE_KEYS: tuple[str, ...] = (
     "gated",
     "verdict_trap",
     "verdict_frame",
+    "uniformity_median",
 )
+
+#: The columns one frame can fill on its own.  ``uniformity_median`` is the one that cannot:
+#: it is a statistic *over* frames, so :func:`check_samples` writes it once the frames are
+#: joined (:func:`_time_median_uniformity`).
+_FRAME_TABLE_KEYS: tuple[str, ...] = CHECK_TABLE_KEYS[:-1]
+
+#: Fewest frames a per-trap time median means anything over.  With one frame it is the
+#: per-frame deviation again, and the report says so rather than quoting it twice.
+MIN_MEDIAN_FRAMES = 2
+
+#: The metrics :attr:`CheckReport.gated_fraction` reports coverage for — the ones an edge-line
+#: or fade exemption can empty out (``docs/guide.md`` §5.5).
+COVERAGE_METRICS: tuple[str, ...] = ("waist", "uniformity", "uniformity_median")
 
 __all__ = [
     "BEAT_CYCLES",
     "CHECK_TABLE_KEYS",
     "COARSE_PER_WAIST",
+    "COVERAGE_METRICS",
     "FINE_PER_WAIST",
     "FIT_HALF_WAISTS",
     "MAX_FINE_SAMPLES",
+    "MIN_MEDIAN_FRAMES",
     "MOTION_FRACTION",
     "CheckReport",
     "Tolerances",
@@ -188,28 +213,49 @@ class Tolerances:
         non-fade frames.
     uniformity:
         Largest relative departure of a trap's peak intensity from its frame's median, on
-        non-fade frames.  This is the *pattern* gate; the absolute scale is not checked
-        (module docstring).
+        non-fade frames.  This is the *pattern* gate, read one frame at a time; the absolute
+        scale is not checked (module docstring).
+    uniformity_median:
+        Largest tolerated **time-median** of that same per-trap deviation, taken over the
+        frames a trap is gated at (:meth:`CheckReport.median_uniformity`).  ``None`` — the
+        default — measures and reports it without gating on it, which is the WO-24 ruling for
+        the drives this package ships: see :meth:`CheckReport.median_uniformity` for the
+        measured flagship numbers and why the statistic separates a *persistent* fault (an
+        Eq. S19 tone) but not a *sliding* one (a fading-Shepard rung).  Set it to a number on a
+        drive whose faults hold still and it becomes a second, verdict-bearing gate.
     blob_off_lattice:
         Brightest tolerated blob sitting on no expected lattice node, relative to the median
         trap peak.  Light there is steered somewhere the drive never asked for.
     blob_on_lattice:
         Brightest tolerated blob on an extended-lattice node that is not a requested trap, for
-        an Eq. S19 drive — a commensurate IM3 product is the realistic occupant.  A fading
-        drive lights those nodes on purpose (``docs/guide.md`` §6.7), so there they are
-        whitelisted instead of gated.
+        an Eq. S19 drive — a commensurate IM3 product is the realistic occupant.
+    blob_fading:
+        The same, for a **fading** drive, whose extended lattice is lit on purpose
+        (``docs/guide.md`` §6.7) at something close to full trap depth.  Whitelisted, but not
+        unboundedly: 1.2 median trap peaks leaves room for the 1.07x mid-hand-over node WO-23
+        measured while still calling light that is materially *brighter than a real trap* what
+        it is.
     missing_trap:
         Faintest tolerated trap peak relative to the frame median, below which a trap counts as
         missing.
+    require_coverage:
+        Fail when an intensity metric ends up with **no gated rows at all**
+        (:attr:`CheckReport.gated_fraction`).  A 2x2 fading array is the case that matters: its
+        edge-line exemption is the whole perimeter, i.e. every trap, so ``passed`` would
+        otherwise certify an intensity pattern nothing was measured against.  ``False``
+        (default) keeps that a note; ``True`` makes it a failure.
     """
 
     lateral: float = 0.05
     axial: float = 0.05
     waist: float = 0.02
     uniformity: float = 0.03
+    uniformity_median: float | None = None
     blob_off_lattice: float = 0.01
     blob_on_lattice: float = 0.10
+    blob_fading: float = 1.2
     missing_trap: float = 0.25
+    require_coverage: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -219,12 +265,22 @@ class Tolerances:
             "uniformity",
             "blob_off_lattice",
             "blob_on_lattice",
+            "blob_fading",
             "missing_trap",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"Tolerances.{name} must be positive and finite, got {value!r}")
             object.__setattr__(self, name, value)
+        if self.uniformity_median is not None:
+            median = float(self.uniformity_median)
+            if not math.isfinite(median) or median <= 0.0:
+                raise ValueError(
+                    "Tolerances.uniformity_median must be positive and finite, or None to "
+                    f"measure it without gating on it, got {self.uniformity_median!r}"
+                )
+            object.__setattr__(self, "uniformity_median", median)
+        object.__setattr__(self, "require_coverage", bool(self.require_coverage))
 
 
 # ---------------------------------------------------------------------------------- report
@@ -246,7 +302,8 @@ class CheckReport:
         Long-format measurements, ``{column: array}`` with one row per (frame, requested trap)
         and the columns of :data:`CHECK_TABLE_KEYS` — fitted position, best-focus ``z_lab`` and
         astigmatic ``delta_f``, radii, peak, power, beat depth, the residuals against the
-        expectation, the model-free profile moments, and the flags saying which gates applied.
+        expectation, the model-free profile moments, the flags saying which gates applied, and
+        each trap's ``uniformity_median`` over the frames (:meth:`median_uniformity`).
     blobs:
         Every local maximum of the full-field canvas that is not a requested trap
         (:class:`aodl.check.metrics.Blob`), brightest first, frame by frame.
@@ -255,6 +312,10 @@ class CheckReport:
     notes:
         What a reader needs in order to read the numbers: exclusions applied, the known blind
         spot, drive-specific caveats.
+    gated_fraction:
+        ``{metric: gated rows / rows}`` for the intensity metrics of :data:`COVERAGE_METRICS`.
+        A **zero** here is the finding: the metric measured nothing, so a ``passed`` that
+        includes it certifies nothing about it (:attr:`Tolerances.require_coverage`).
     out_of_band:
         Per-channel splatter fraction (:func:`aodl.check.demod.out_of_band_fraction`).
         Report-only: the band is a hardware limit, not a physics prediction.
@@ -274,6 +335,7 @@ class CheckReport:
     blobs: tuple[Blob, ...]
     failures: tuple[str, ...]
     notes: tuple[str, ...]
+    gated_fraction: dict[str, float]
     out_of_band: dict[str, float]
     sim_delta: dict[str, float] | None
     tolerances: Tolerances
@@ -321,22 +383,82 @@ class CheckReport:
             ),
             ("uniformity", np.abs(table["uniformity"]), tol.uniformity, gated & present & quiet),
         )
+        if tol.uniformity_median is not None:
+            candidates += (
+                (
+                    "uniformity_median",
+                    np.abs(table["uniformity_median"]),
+                    tol.uniformity_median,
+                    gated & present & quiet,
+                ),
+            )
         for name, residual, limit, mask in candidates:
             if not np.any(mask):
                 out[name] = (0.0, limit, "no gated rows")
                 continue
             values = np.where(mask & np.isfinite(residual), residual, -np.inf)
             i = int(np.argmax(values))
-            out[name] = (float(values[i]), limit, self._where(i))
+            # A statistic taken *over* time has no one frame to blame, so it names the trap.
+            where = self._which(i) if name == "uniformity_median" else self._where(i)
+            out[name] = (float(values[i]), limit, where)
         return out
 
     def _where(self, i: int) -> str:
         """``"trap (ix,iy) at t = ... us"`` for row ``i``."""
         table = self.table
-        return (
-            f"trap ({int(table['ix'][i])},{int(table['iy'][i])}) at "
-            f"t = {table['time'][i] / us:.4g} us"
-        )
+        return f"{self._which(i)} at t = {table['time'][i] / us:.4g} us"
+
+    def _which(self, i: int) -> str:
+        """``"trap (ix,iy)"`` for row ``i`` — no time, for statistics taken *over* time."""
+        table = self.table
+        return f"trap ({int(table['ix'][i])},{int(table['iy'][i])})"
+
+    def median_uniformity(self) -> tuple[float, str]:
+        r"""Worst per-trap **time-median** relative intensity deviation, and whose it is.
+
+        Each gated trap's ``uniformity`` is medianed over the frames it was gated at (at least
+        :data:`MIN_MEDIAN_FRAMES` of them), and this is the largest ``|median|``.  The point of
+        the median is to separate two things the per-frame gate cannot tell apart: the
+        hand-over ripple of a fading drive is *fade-phase dependent*, so it moves from frame to
+        frame and medians away, while a fault that holds still survives every median.
+
+        **Report-only by default**, and here is why (WO-24 §1, measured on the ``docs/guide.md``
+        flagship at ``k_subtimes = 48`` over its seven :meth:`aodl.api.MotionPlan.check_times`):
+
+        =========================================  ==========  ============
+        drive                                      per-frame   time-median
+        =========================================  ==========  ============
+        clean flagship                             0.213       0.137
+        one ``Bx`` rung scaled 0.80 (36 % of it)   0.280       0.137
+        =========================================  ==========  ============
+
+        — no separation whatsoever, because a fading-Shepard rung fault does **not** hold
+        still.  The ladder slides through the array (that is what Shepard means), so the
+        corrupted rung feeds column 0 at the first frame, column 1 at the second and column 4
+        at the third, then leaves the band: a −0.3 excursion at one frame in seven, which any
+        median over seven frames erases.  What the clean 0.137 *is*, meanwhile, is real and
+        persistent — the Eqs. S20-S22 intermodulation products land on lattice nodes at those
+        nodes' own optical frequency and interfere permanently (:func:`_beat_comb`), so the
+        IM3 pattern is exactly the kind of thing a time median keeps.
+
+        The statistic does separate a fault that holds still: on the Eq. S19 3x3 of
+        ``tests/test_check_verdict.py``, one tone 5 % down is a fixed column at every frame and
+        the median reads 0.098 against a clean 0.012 — an 8x separation, gated there at 0.04
+        with both sides pinned.  Set :attr:`Tolerances.uniformity_median` on such a drive.
+
+        Returns
+        -------
+        ``(worst |median|, "trap (ix,iy)")``; ``(0.0, reason)`` when no trap qualified.
+        """
+        table = self.table
+        if not self.n_rows:
+            return 0.0, "no rows"
+        values = np.abs(table["uniformity_median"])
+        finite = np.isfinite(values)
+        if not np.any(finite):
+            return 0.0, f"no trap gated on {MIN_MEDIAN_FRAMES} or more frames"
+        i = int(np.argmax(np.where(finite, values, -np.inf)))
+        return float(values[i]), self._which(i)
 
     def summary(self) -> str:
         """A short human-readable block: verdict, worst residual per metric, blobs, exclusions."""
@@ -348,10 +470,24 @@ class CheckReport:
                 f"  frames       {times.size} over [{times[0] / us:.4g}, {times[-1] / us:.4g}] "
                 f"us; {self.n_rows} (frame, trap) rows"
             )
-        lines.append("  residuals    metric        worst      tolerance   where")
+        lines.append(f"  residuals    {'metric':<17} {'worst':>9}  {'tolerance':>9}   where")
         for name, (residual, limit, where) in self.worst().items():
             flag = "" if residual <= limit else "   <-- FAIL"
-            lines.append(f"               {name:<12} {residual:9.4g}  {limit:9.4g}   {where}{flag}")
+            lines.append(f"               {name:<17} {residual:9.4g}  {limit:9.4g}   {where}{flag}")
+        if self.tolerances.uniformity_median is None:
+            median, whose = self.median_uniformity()
+            lines.append(
+                f"               {'uniformity_median':<17} {median:9.4g}  {'-':>9}   {whose}"
+                "   (report-only)"
+            )
+        if self.gated_fraction:
+            lines.append(
+                "  coverage     "
+                + ", ".join(
+                    f"{name} {fraction:.0%}" + ("  <-- NONE GATED" if fraction <= 0.0 else "")
+                    for name, fraction in self.gated_fraction.items()
+                )
+            )
         off = [b for b in self.blobs if not b.on_lattice]
         on = [b for b in self.blobs if b.on_lattice]
         lines.append(
@@ -425,9 +561,9 @@ def _as_record(
             raise ValueError(
                 "check_samples needs normalization when it is handed raw arrays: render_samples "
                 "divides every channel by one global peak, so the physical drive is "
-                "samples * normalization and the nonlinear pupil is mis-scaled by the crest "
-                "factor without it (aodl.check.record).  Pass normalization=1.0 explicitly if "
-                "the arrays really are in Eq. S1 units."
+                "samples * normalization and the nonlinear pupil is mis-scaled by that "
+                "normalization factor without it (aodl.check.record).  Pass normalization=1.0 "
+                "explicitly if the arrays really are in Eq. S1 units."
             )
         return from_arrays(samples, sample_rate, params, normalization=normalization)
     raise TypeError(
@@ -644,13 +780,30 @@ def _comb_window(beats: tuple[float, ...], k: int) -> float | None:
     at ``k = 48``).  When the comb of :func:`_beat_comb` is commensurate — which an atom array's
     always is — the exact schedule is available and is worth taking.
 
-    ``W = 1 / gcd(beats)`` is that window, computed on integer hertz; ``None`` means there is no
-    usable one, either because the comb is empty, or because its greatest common divisor is so
-    fine that the schedule would no longer resolve the fastest beat.  Aliasing onto DC needs
-    ``b W = k``; the test below refuses at the Nyquist half of that (``b W > k / 2``), and then
-    the golden-ratio fallback is the honest answer.  The threshold is why the choice of
-    schedule depends on ``k``: the flagship's ``b W`` reaches 23, so it takes the uniform comb
-    at ``k >= 48`` and the fallback below that.
+    ``W = 1 / gcd(beats)`` is that window, computed on integer hertz (:func:`_comb_period`);
+    ``None`` means there is no usable one, either because the comb is empty or not
+    commensurate, or because ``k`` is too small to resolve the fastest beat over it.  Aliasing
+    onto DC needs ``b W = k``; the test below refuses at the Nyquist half of that
+    (``b W > k / 2``), and then the golden-ratio fallback is the honest answer — a *noisier*
+    one, which is why :func:`_comb_shortfall` puts the ``k`` that would have worked in the
+    report's notes.  The threshold is why the choice of schedule depends on ``k``: the
+    flagship's ``b W`` reaches 23, so it takes the uniform comb at ``k >= 46`` and the fallback
+    below that.
+    """
+    period = _comb_period(beats)
+    if period is None:
+        return None
+    window, harmonic = period
+    return None if 2 * harmonic > k else window
+
+
+def _comb_period(beats: tuple[float, ...]) -> tuple[float, int] | None:
+    """``(1 / gcd(beats) [s], fastest beat in cycles per that window)``, or ``None``.
+
+    The harmonic is returned as an **integer** rather than left as ``max(beats) * window``:
+    the comb is commensurate by the test just above, so the product is a whole number
+    mathematically, and in floating point it is a whole number plus 4e-15 — enough to push the
+    ``k`` threshold of :func:`_comb_window` up by one and drop the exact schedule for no reason.
     """
     if not beats:
         return None
@@ -662,9 +815,22 @@ def _comb_window(beats: tuple[float, ...], k: int) -> float | None:
     window = 1.0 / step
     if any(abs(beat * window - round(beat * window)) > 1e-6 for beat in beats):
         return None
-    if max(beats) * window > 0.5 * k:
+    return window, int(round(max(beats) * window))
+
+
+def _comb_shortfall(beats: tuple[float, ...], k: int) -> int | None:
+    """Smallest ``k_subtimes`` that would take the exact comb schedule, when ``k`` does not.
+
+    ``None`` when there is no commensurate comb to take (nothing is being given up) or when
+    ``k`` is already large enough.  Otherwise the caller is on the golden-ratio fallback purely
+    because it asked for too few sub-times, which costs verdict noise for no reason — the
+    report says so (:func:`_notes`).
+    """
+    period = _comb_period(beats)
+    if period is None:
         return None
-    return window
+    needed = 2 * period[1]
+    return None if needed <= k else needed
 
 
 def _schedule(expect: Expectation, traps: ExpectedTraps, k: int) -> tuple[Float, float, bool]:
@@ -722,10 +888,18 @@ def _line_intensities(
 ) -> tuple[Float, Float]:
     """``(peak, integral)`` per sub-time and line, ``(K, n_lines)`` each.
 
-    ``peak`` is the intensity at the line's fitted centre, ``integral`` its intensity summed
+    ``peak`` is the intensity **at** the line's fitted centre, ``integral`` its intensity summed
     over the fit window.  Both are kept **per sub-time** so that the outer product with the
     other axis is formed before the average, which is what keeps the two axes' beats correlated
     (:mod:`aodl.check.metrics`).
+
+    The centre almost never falls on a grid sample, so the value there is interpolated by the
+    parabola through the three samples bracketing it rather than read off the nearest one.
+    Reading the nearest sample costs a Gaussian ``exp(-2 d^2 / w_0^2)`` with ``d`` up to half a
+    cell, i.e. a *quantization floor* of ``(1/FINE_PER_WAIST)^2 / 2 = 0.2 %`` on every peak —
+    which is noise in the uniformity gate, and noise that changes when a trap drifts across a
+    cell boundary.  Three samples of a ``w_0/16`` grid resolve the curvature to ~1e-5, so the
+    interpolation removes the floor outright rather than trading it for another.
     """
     intensity = np.abs(field) ** 2
     step = float(coords[1] - coords[0]) if coords.size > 1 else 1.0
@@ -734,8 +908,18 @@ def _line_intensities(
     sums = np.empty_like(peaks)
     for line, center in enumerate(centers):
         window = _window(coords, float(center), half)
-        nearest = int(np.clip(np.searchsorted(coords, center), 0, coords.size - 1))
-        peaks[:, line] = intensity[:, nearest]
+        node = int(np.clip(np.searchsorted(coords, center), 1, max(coords.size - 2, 1)))
+        if coords.size < 3:
+            peaks[:, line] = intensity[:, node]
+        else:
+            low, mid, high = intensity[:, node - 1], intensity[:, node], intensity[:, node + 1]
+            offset = (float(center) - float(coords[node])) / step
+            peaks[:, line] = np.maximum(
+                mid
+                + 0.5 * offset * (high - low)
+                + 0.5 * offset * offset * (low - 2.0 * mid + high),
+                0.0,
+            )
         sums[:, line] = intensity[:, window].sum(axis=1) * step
     return peaks, sums
 
@@ -759,6 +943,59 @@ def _gate(
             f"{metric}: trap ({int(traps.ix[i])},{int(traps.iy[i])}) at "
             f"t = {traps.time / us:.4g} us is {describe(i)}, tolerance {tol:.4g}"
         )
+
+
+def _intensity_masks(table: dict[str, Float]) -> dict[str, Bool]:
+    """The row mask each :data:`COVERAGE_METRICS` gate actually applied, from the flag columns.
+
+    One place to say what "gated" means per metric, shared by :meth:`CheckReport.worst`'s
+    bookkeeping, the coverage fractions and the time median, so the three cannot drift apart.
+    """
+    gated = table["gated"] > 0.5
+    present = table["present"] > 0.5
+    quiet = table["in_fade"] < 0.5
+    intensity = gated & present & quiet
+    return {
+        "waist": intensity & (table["transient"] < 0.5),
+        "uniformity": intensity,
+        "uniformity_median": intensity,
+    }
+
+
+def _time_median_uniformity(table: dict[str, Float]) -> Float:
+    """Each trap's time-median ``uniformity``, broadcast back over that trap's own rows.
+
+    The median runs over the frames where the trap was actually gated (``_intensity_masks``),
+    and a trap gated on fewer than :data:`MIN_MEDIAN_FRAMES` frames gets ``nan`` rather than a
+    number that would only be its per-frame deviation wearing a different name.  Every row of a
+    trap carries the same value, so ``nanmax(abs(...))`` over rows is the worst over traps.
+    """
+    rows = int(table["time"].size)
+    out = np.full(rows, np.nan)
+    if not rows:
+        return out
+    usable = _intensity_masks(table)["uniformity_median"] & np.isfinite(table["uniformity"])
+    ix, iy = table["ix"], table["iy"]
+    keys = np.stack([ix, iy], axis=1)
+    for key in np.unique(keys, axis=0):
+        here = (ix == key[0]) & (iy == key[1])
+        sample = table["uniformity"][here & usable]
+        if sample.size >= MIN_MEDIAN_FRAMES:
+            out[here] = float(np.median(sample))
+    return out
+
+
+def _coverage(table: dict[str, Float]) -> dict[str, float]:
+    """``{metric: gated rows / rows}`` for :data:`COVERAGE_METRICS`."""
+    rows = int(table["time"].size)
+    if not rows:
+        return dict.fromkeys(COVERAGE_METRICS, 0.0)
+    masks = _intensity_masks(table)
+    fractions = {name: float(np.count_nonzero(masks[name])) / rows for name in COVERAGE_METRICS}
+    fractions["uniformity_median"] = (
+        float(np.count_nonzero(np.isfinite(table["uniformity_median"]))) / rows
+    )
+    return fractions
 
 
 def _match_tolerance(expect: Expectation) -> float:
@@ -894,10 +1131,17 @@ def check_samples(
 
     table = {
         key: np.concatenate([chunk[key] for chunk in chunks]) if chunks else np.zeros(0)
-        for key in CHECK_TABLE_KEYS
+        for key in _FRAME_TABLE_KEYS
     }
+    table["uniformity_median"] = _time_median_uniformity(table)
+    coverage = _coverage(table)
+    failures.extend(_time_median_failures(table, tol))
+    failures.extend(_coverage_failures(coverage, tol, frames.size))
     delta = None if sim is None else sim_delta(table, sim, _match_tolerance(expect))
-    notes = _notes(expect, table, tol, mode, factors, windows, exact, counts)
+    shortfall = _comb_shortfall(_beat_comb(expect), max(int(k_subtimes), 1))
+    notes = _notes(
+        expect, table, tol, mode, factors, windows, exact, counts, coverage, shortfall, k_subtimes
+    )
     return CheckReport(
         passed=not failures,
         mode=mode,
@@ -906,11 +1150,57 @@ def check_samples(
         blobs=tuple(blobs),
         failures=tuple(failures),
         notes=notes,
+        gated_fraction=coverage,
         out_of_band=out_of_band_fraction(rec),
         sim_delta=delta,
         tolerances=tol,
         params=hardware,
     )
+
+
+def _time_median_failures(table: dict[str, Float], tol: Tolerances) -> list[str]:
+    """The ``uniformity_median`` gate, when :attr:`Tolerances.uniformity_median` sets one.
+
+    One line per offending trap — a *time* statistic, so the line names the trap and the frames
+    it was medianed over rather than one instant — and the trap's ``verdict_trap`` rows are
+    cleared with it.  ``None`` (the default) measures without gating; see
+    :meth:`CheckReport.median_uniformity` for what that ruling rests on.
+    """
+    limit = tol.uniformity_median
+    if limit is None or not table["time"].size:
+        return []
+    residual = np.abs(table["uniformity_median"])
+    bad = np.isfinite(residual) & (residual > limit)
+    failures: list[str] = []
+    for key in np.unique(np.stack([table["ix"][bad], table["iy"][bad]], axis=1), axis=0):
+        here = (table["ix"] == key[0]) & (table["iy"] == key[1])
+        table["verdict_trap"][here] = 0.0
+        value = float(table["uniformity_median"][here][0])
+        frames = int(np.count_nonzero(here & _intensity_masks(table)["uniformity_median"]))
+        failures.append(
+            f"uniformity_median: trap ({int(key[0])},{int(key[1])}) sits {value * 100:+.3g} % off "
+            f"its frames' median peak at the median of {frames} gated frame(s) — a persistent "
+            f"offset, not hand-over ripple, tolerance {limit:.4g}"
+        )
+    return failures
+
+
+def _coverage_failures(coverage: dict[str, float], tol: Tolerances, n_frames: int) -> list[str]:
+    """The :attr:`Tolerances.require_coverage` gate: an intensity metric that gated nothing.
+
+    Always a note (:func:`_notes`); a failure only when the caller asked for one, so that the
+    default verdict of every drive already in the suite is unchanged.
+    """
+    if not tol.require_coverage:
+        return []
+    return [
+        f"coverage: the {name!r} gate applied to no row at all over {n_frames} frame(s), so "
+        "this PASS certifies nothing about it — every requested trap is exempt (a fading array "
+        "whose edge lines are its whole perimeter, a wholly transient or wholly mid-fade set of "
+        "frames).  Check an interior-bearing array, or more frames, or drop require_coverage."
+        for name, fraction in coverage.items()
+        if fraction <= 0.0
+    ]
 
 
 def _resolve_times(
@@ -1239,10 +1529,14 @@ def _audit_blobs(
             )
         )
         if on_lattice and expect.fading:
-            continue  # the Shepard extended grid and its shadow tweezers - documented light
-        limit = tol.blob_on_lattice if on_lattice else tol.blob_off_lattice
-        if level > limit:
+            # The Shepard extended grid and its shadow tweezers are documented light, so they
+            # are whitelisted - but only up to a real trap's depth.  A node several times
+            # brighter than the traps is not a hand-over, whatever lattice it sits on.
+            limit, where = tol.blob_fading, "on the fading drive's extended lattice"
+        else:
+            limit = tol.blob_on_lattice if on_lattice else tol.blob_off_lattice
             where = "on an extended-lattice node" if on_lattice else "off lattice"
+        if level > limit:
             failures.append(
                 f"blob: light {where} at ({bx / um:+.4g}, {by / um:+.4g}) um, "
                 f"t = {traps.time / us:.4g} us, carries {level:.4g} of the median trap peak "
@@ -1260,18 +1554,66 @@ def _notes(
     windows: list[float],
     exact: bool,
     counts: list[int],
+    coverage: dict[str, float],
+    shortfall: int | None,
+    k_subtimes: int,
 ) -> tuple[str, ...]:
     """The caveats that apply to *this* check — the honest part of the report."""
     n_transient, n_filling, n_fade = counts
     array = expect.spec.array
     factor = max(factors, default=1)
+    n_frames = len(windows)
     notes = [
         f"drive: {expect.describe()}; pupil model {mode!r}"
         + (f", transform grid decimated {min(factors, default=1)}-{factor}x" if factor > 1 else ""),
+    ]
+    if shortfall is not None:
+        notes.append(
+            f"k_subtimes={int(k_subtimes)} too small for exact beat cancellation (needs >= "
+            f"{shortfall}); using golden-ratio fallback - verdict noise increases.  This drive's "
+            "same-node beats form a commensurate comb that a uniform schedule would annihilate "
+            "exactly; the fallback only averages them down."
+        )
+    notes.append(
         "blind spot: a uniform gain on all four channels is divided out by render_samples' "
         "global normalization, and is optically invisible anyway, so only the intensity "
-        "*pattern* is gated - never its absolute scale.",
-    ]
+        "*pattern* is gated - never its absolute scale."
+    )
+    empty = [name for name, fraction in coverage.items() if fraction <= 0.0]
+    notes.append(
+        "intensity-gate coverage: "
+        + ", ".join(
+            f"{name} {fraction:.0%} of {int(table['time'].size)} row(s)"
+            for name, fraction in coverage.items()
+        )
+        + (
+            ""
+            if not empty
+            else f".  {', '.join(empty)} gated NO row: this verdict says nothing about the "
+            "intensity pattern (every trap exempt), and Tolerances(require_coverage=True) turns "
+            "that into a failure."
+        )
+    )
+    if tol.uniformity_median is None and coverage["uniformity_median"] > 0.0:
+        notes.append(
+            "uniformity_median (per-trap median over the frames) is measured but not gated: on "
+            "the fading-Shepard drives this package ships the ladder slides, so a rung fault is "
+            "a one-frame excursion that any median erases (WO-24 §1; clean and 0.80-rung "
+            "flagships both median 0.137).  Set Tolerances(uniformity_median=...) on a drive "
+            "whose faults hold still - an Eq. S19 tone fault does."
+        )
+    elif coverage["uniformity_median"] <= 0.0 and n_frames >= MIN_MEDIAN_FRAMES:
+        notes.append(
+            "uniformity_median: no trap was gated on "
+            f"{MIN_MEDIAN_FRAMES} or more of the {n_frames} frames, so there is no time median "
+            "to read; the per-frame uniformity gate is the whole intensity verdict here."
+        )
+    elif n_frames < MIN_MEDIAN_FRAMES:
+        notes.append(
+            f"uniformity_median: a {n_frames}-frame check has no time axis to median over "
+            f"(< {MIN_MEDIAN_FRAMES} frames), so the per-frame uniformity gate is the whole "
+            "intensity verdict; the column is nan."
+        )
     if windows:
         how = (
             "uniform sub-times over one full period of the drive's beat comb, which annihilates "
@@ -1308,8 +1650,11 @@ def _notes(
             "outermost node trades its light with the extended grid (docs/guide.md §6.6)."
         )
         notes.append(
-            "fading drive: light on the extended lattice is whitelisted rather than gated - an "
-            "M + 1 (even M) or M + 2 (odd M) wide array is what a fading ladder makes."
+            "fading drive: light on the extended lattice is whitelisted up to "
+            f"{tol.blob_fading:.4g} of the median trap peak rather than gated at "
+            f"{tol.blob_on_lattice:.4g} - an M + 1 (even M) or M + 2 (odd M) wide array is what "
+            "a fading ladder makes, at close to full trap depth; brighter than a real trap it "
+            "is still a finding."
         )
     if array.mx > 1 and array.my > 1 and array.delta_f_x == array.delta_f_y:
         notes.append(

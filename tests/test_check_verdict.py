@@ -18,10 +18,17 @@ The third is deliberately a **single tone** and not a whole channel: a uniform p
 survives :func:`aodl.waveform.export.render_samples`' global normalization as nothing at all,
 and is optically invisible in any case, so no checker can see it.  That is the blind spot the
 report states in its notes, and this test is where it is pinned.
+
+Two later sections pin what WO-24 added around that verdict: the **time median** of the
+intensity pattern, which is the statistic that tells a standing fault from one-frame ripple and
+which this drive is where it works (§4), and the bookkeeping that stops a verdict claiming more
+than it measured — gate **coverage** on an array with no interior traps, and the **bound** on a
+fading drive's on-lattice whitelist (§5).
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import replace
 
@@ -68,7 +75,18 @@ def _broken(plan, channel, rebuild):
 
 def _metrics(report):
     """The metric each failure line names — every message leads with it."""
-    return {re.match(r"([a-z ]+):", line).group(1) for line in report.failures}
+    return {re.match(r"([a-z_ ]+):", line).group(1) for line in report.failures}
+
+
+def _one_tone_quieter(tones):
+    """The first tone of a channel at 95 % amplitude — a pure, *persistent* intensity fault."""
+    head = tones[0]
+    return (
+        ToneTrack(
+            freq=head.freq, env=ConstantEnvelope(amp=0.95 * head.env.amp), phase0=head.phase0
+        ),
+        *tones[1:],
+    )
 
 
 # ================================================================== 1. the good drive
@@ -169,17 +187,7 @@ def test_five_percent_on_one_bx_tone_fails_uniformity_only(plan) -> None:
     move, does not defocus and does not change shape.  Only ``uniformity`` may fire.  (The
     envelope is capped at 1, so the 5 % goes downwards; the sign of the fault is immaterial.)
     """
-
-    def detuned_amplitude(tones):
-        head = tones[0]
-        return (
-            ToneTrack(
-                freq=head.freq, env=ConstantEnvelope(amp=0.95 * head.env.amp), phase0=head.phase0
-            ),
-            *tones[1:],
-        )
-
-    broken = _broken(plan, "Bx", detuned_amplitude)
+    broken = _broken(plan, "Bx", _one_tone_quieter)
     report = broken.check(times=_frames(plan), k_subtimes=16)
     assert not report.passed
     assert _metrics(report) == {"uniformity"}
@@ -260,3 +268,201 @@ def test_default_frames_leave_room_for_the_averaging_window(plan) -> None:
     )
     with pytest.raises(ValueError, match="reaches drive earlier than"):
         check_samples(late, expect, times=[2.0 * tau], k_subtimes=8, n_z=3)
+
+
+# ==================================== 4. WO-24 §1: the time median, where a fault holds still
+
+#: The both-sided gate this file pins ``Tolerances.uniformity_median`` at.  Measured: the clean
+#: mini-story's worst per-trap time median is 0.012 (< gate/2) and the 5 %-tone drive's is 0.098
+#: (> 2 x gate) — an 8x separation, because on an Eq. S19 drive the ladder does not slide and a
+#: tone fault is therefore the *same* column at every frame.  It is not the package default: on
+#: the fading-Shepard flagship the same statistic separates nothing at all, which is why the
+#: default is ``None`` (report-only).  See ``tests/test_check_flagship.py`` §3.
+MEDIAN_GATE = 0.04
+
+
+def test_the_time_median_catches_a_persistent_tone_fault(plan) -> None:
+    """The second uniformity statistic, gated, with both sides pinned.
+
+    ``uniformity`` asks "is this trap off its frame's median?", one frame at a time; the fault
+    has to be big *now*.  ``uniformity_median`` asks "is this trap off at every frame?", which
+    is a different question with a different blind spot: a one-frame excursion (an intermittent
+    ghost, a hand-over) medians away, and a standing offset does not.  A tone 5 % down in
+    amplitude is the standing kind — the column it feeds is 10 % dark from the first frame to
+    the last — so both statistics fire, and the median fires with room to spare on both sides.
+    """
+    times = _frames(plan)
+    tol = Tolerances(uniformity_median=MEDIAN_GATE)
+
+    clean = plan.check(times=times, k_subtimes=32, tolerances=tol)
+    assert clean.passed, clean.summary()
+    quiet = clean.median_uniformity()[0]
+    assert quiet == pytest.approx(0.012, abs=0.005)
+    assert quiet < MEDIAN_GATE / 2.0  # the low-side pin
+    assert clean.worst()["uniformity_median"][0] == pytest.approx(quiet)
+
+    report = _broken(plan, "Bx", _one_tone_quieter).check(
+        times=times, k_subtimes=32, tolerances=tol
+    )
+    assert not report.passed
+    loud = report.median_uniformity()[0]
+    assert loud == pytest.approx(0.098, abs=0.01)
+    assert loud > 2.0 * MEDIAN_GATE  # the high-side pin
+    assert _metrics(report) == {"uniformity", "uniformity_median"}
+
+    line = next(entry for entry in report.failures if entry.startswith("uniformity_median:"))
+    assert "a persistent offset, not hand-over ripple" in line
+    assert f"median of {FRAMES} gated frame(s)" in line
+    # the whole faulted column is named, and only it
+    offenders = {
+        int(report.table["ix"][i]) for i, ok in enumerate(report.table["verdict_trap"]) if ok < 0.5
+    }
+    assert offenders == {0}
+
+
+def test_the_time_median_is_report_only_and_needs_two_frames(plan) -> None:
+    """Default ``None``: measured, printed, noted — never a failure.  One frame: no median."""
+    times = _frames(plan)
+    report = plan.check(times=times, k_subtimes=32)
+    assert report.tolerances.uniformity_median is None
+    assert "uniformity_median" not in report.worst()
+    assert "(report-only)" in report.summary()
+    assert report.gated_fraction["uniformity_median"] == 1.0
+    assert report.median_uniformity()[0] > 0.0
+
+    single = plan.check(times=times[:1], k_subtimes=32)
+    assert single.gated_fraction["uniformity_median"] == 0.0
+    assert np.all(np.isnan(single.table["uniformity_median"]))
+    assert single.median_uniformity() == (0.0, "no trap gated on 2 or more frames")
+    assert any("has no time axis to median over" in note for note in single.notes)
+    assert single.passed, single.summary()  # and it is still a perfectly good verdict
+
+
+# ================================= 5. WO-24 §2: what a verdict is allowed to stay silent about
+
+#: A 2x2 fading-Shepard drive: both axes hand over, so *every* column and *every* row is an
+#: edge line and the intensity gates have nothing left to judge.
+FADING_2X2 = TrajectorySpec(
+    array=ArraySpec(2, 2, delta_f_x=1.0 * MHz, delta_f_y=1.3 * MHz),
+    moves=(Lift(20 * um, 300 * us),),
+)
+
+#: Opened enough that this small, fast-fading drive's *physics* is not what is under test here
+#: (``docs/guide.md`` §5.5): what is under test is the bookkeeping.
+WIDE_OPEN = dict(waist=0.5, uniformity=0.5, blob_fading=3.0)
+
+
+@pytest.fixture(scope="module")
+def fading_2x2():
+    """The 2x2 fading drive and the two frames it is checked at."""
+    from aodl.params import default_1030
+
+    built = plan_motion(FADING_2X2, default_1030())
+    assert built.report.mode == "shepard"
+    return built, built.check_times()[:2]
+
+
+def test_a_fading_2x2_passes_without_measuring_any_intensity(fading_2x2) -> None:
+    """The silent PASS, and the report refusing to be silent about it.
+
+    Every trap of a 2x2 fading on both axes is on an edge line, and edge lines leave the
+    intensity gates (``docs/guide.md`` §6.6) — so ``waist`` and ``uniformity`` judge *no row*
+    and the drive passes them by having nothing to say.  That is not a bug in the exemption; it
+    is a fact about the drive that a bare ``passed`` hides, so ``gated_fraction`` states it,
+    ``summary()`` prints it and the notes spell it out.
+    """
+    plan, times = fading_2x2
+    report = plan.check(times=times, k_subtimes=48, n_z=3, tolerances=Tolerances(**WIDE_OPEN))
+    assert report.passed, report.summary()
+    assert report.gated_fraction == {"waist": 0.0, "uniformity": 0.0, "uniformity_median": 0.0}
+    assert report.worst()["uniformity"] == (0.0, 0.5, "no gated rows")
+    assert not [line for line in report.failures if line.startswith("coverage:")]
+
+    note = next(note for note in report.notes if note.startswith("intensity-gate coverage"))
+    assert "gated NO row" in note and "says nothing about the intensity pattern" in note
+    assert "require_coverage" in note
+    assert "NONE GATED" in report.summary()
+
+
+def test_require_coverage_turns_that_silence_into_a_failure(fading_2x2) -> None:
+    """``Tolerances(require_coverage=True)`` and the same drive stops passing.
+
+    The failure names the metric, says the verdict certifies nothing about it, and suggests the
+    three ways out.  Nothing *else* fails — the same check passes wide open otherwise (previous
+    test) — so this is the coverage rule on its own, not a physics gate in disguise.
+    """
+    plan, times = fading_2x2
+    report = plan.check(
+        times=times,
+        k_subtimes=48,
+        n_z=3,
+        tolerances=Tolerances(require_coverage=True, **WIDE_OPEN),
+    )
+    assert not report.passed
+    assert _metrics(report) == {"coverage"}
+    assert len(report.failures) == 3  # waist, uniformity, uniformity_median
+    line = report.failures[0]
+    assert line.startswith("coverage: the 'waist' gate applied to no row at all over 2 frame(s)")
+    assert "certifies nothing about it" in line
+
+
+def _synthetic_lines(coords, centers, amplitudes, waist0):
+    """One sub-time of a separable field: unit-waist Gaussians at ``centers``."""
+    field = np.zeros((1, coords.size), dtype=np.complex128)
+    for center, amplitude in zip(centers, amplitudes, strict=True):
+        field[0] += amplitude * np.exp(-(((coords - float(center)) / waist0) ** 2))
+    return field
+
+
+@pytest.mark.parametrize(("depth", "caught"), [(1.07, False), (2.0, True)])
+def test_the_fading_whitelist_stops_at_a_traps_own_depth(depth, caught) -> None:
+    """A fading drive's extended lattice is allowed to be lit — not to outshine the array.
+
+    The audit whitelists on-lattice light on a fading drive because that is what an Eq. S24-S28
+    ladder makes (``docs/guide.md`` §6.7), and WO-23 measured a legitimate extended node at
+    1.07 median trap peaks mid-hand-over.  Unbounded, though, that whitelist would swallow a
+    node at *any* brightness, and a node twice a trap's depth is not a hand-over — it is power
+    going somewhere the drive never asked for, on a lattice that happens to be expected.
+
+    The canvas here is synthetic and exact — three trap columns and three rows of unit
+    Gaussians, plus one extended-lattice column at ``depth`` — so the two sides differ in that
+    number and nothing else.
+    """
+    from aodl.check.expect import Expectation
+    from aodl.check.report import _audit_blobs
+    from aodl.params import default_1030
+    from aodl.trajectory.spec import Hold
+
+    params = default_1030()
+    array = ArraySpec(3, 3, delta_f_x=1.0 * MHz, delta_f_y=1.3 * MHz)
+    expect = Expectation(
+        spec=TrajectorySpec(array=array, moves=(Hold(100 * us),)),
+        params=params,
+        shadows=((80 * us, "x", params.deflection_scale * 1.0 * MHz),),
+    )
+    assert expect.fading  # ... which is what turns the whitelist on
+    at = 20.0 * us  # far from the hand-over, so no shadow tweezers are expected here
+    traps = expect.traps(at)
+    nodes_x, nodes_y = expect.lattice(at, extend=1)
+
+    waist0 = params.optics.waist0
+    step = waist0 / 16.0
+    xs = np.arange(float(nodes_x.min()) - 3.0 * waist0, float(nodes_x.max()) + 3.0 * waist0, step)
+    ys = np.arange(float(nodes_y.min()) - 3.0 * waist0, float(nodes_y.max()) + 3.0 * waist0, step)
+    ux = _synthetic_lines(
+        xs, [*traps.columns, nodes_x[-1]], [1.0, 1.0, 1.0, math.sqrt(depth)], waist0
+    )
+    uy = _synthetic_lines(ys, traps.rows, [1.0, 1.0, 1.0], waist0)
+
+    blobs, failures = _audit_blobs(
+        ux, uy, xs, ys, expect=expect, traps=traps, reference=1.0, tol=Tolerances()
+    )
+    assert len(blobs) == 3  # the extended column crossing the three rows
+    assert all(blob.on_lattice for blob in blobs)
+    assert max(blob.rel_intensity for blob in blobs) == pytest.approx(depth, rel=0.01)
+
+    assert bool(failures) is caught
+    if caught:
+        assert len(failures) == 3
+        assert failures[0].startswith("blob: light on the fading drive's extended lattice")
+        assert "tolerance 1.2" in failures[0]
