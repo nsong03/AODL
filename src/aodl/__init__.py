@@ -54,6 +54,9 @@ constants for boundary code.
 
 from . import params, units
 from .api import FadeEvent, MotionPlan, PlanReport, band_usage, fade_schedule, plan_motion
+from .check.expect import Expectation
+from .check.record import load_samples
+from .check.report import CheckReport, Tolerances, check_samples
 from .device.aodl import TermArray, build_terms
 from .engine import SimResult, simulate
 from .field.focal import FrameGrid, intensity_frame, intensity_slice_xz
@@ -108,8 +111,10 @@ __all__ = [
     "ArraySpec",
     "ChannelFade",
     "ChannelWaveform",
+    "CheckReport",
     "ConstantEnvelope",
     "Envelope",
+    "Expectation",
     "FadeEvent",
     "FadeZoneEnvelope",
     "FrameGrid",
@@ -126,6 +131,7 @@ __all__ = [
     "SwitchRamped",
     "TermArray",
     "ToneTrack",
+    "Tolerances",
     "TrajectorySpec",
     "Translate",
     "WaveformSet",
@@ -135,6 +141,7 @@ __all__ = [
     "auto_grid",
     "band_usage",
     "build_terms",
+    "check_samples",
     "default_1030",
     "f_z_ramp",
     "fade_schedule",
@@ -142,6 +149,7 @@ __all__ = [
     "intensity_frame",
     "intensity_slice_xz",
     "lattice_comb_offset",
+    "load_samples",
     "max_z_integral",
     "measure",
     "paper_808",

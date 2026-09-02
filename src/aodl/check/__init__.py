@@ -32,12 +32,17 @@ Eq. S3 model the simulator implements, so it cross-validates the analytic path d
 aperture's spatial-frequency domain, which carries compression and every intermodulation
 product with no expansion order to truncate.
 
-WO-22 builds the expectation, verdict and product wiring on top of these pieces.
+On top of those numerics sit the *product* pieces: :class:`~aodl.check.expect.Expectation`
+says what the drive was asked to do (from the trajectory spec and Table I alone), and
+:func:`~aodl.check.report.check_samples` turns the two into a :class:`
+~aodl.check.report.CheckReport` — a pass/fail verdict with every residual named.
+:meth:`aodl.api.MotionPlan.check` is the one-call front door onto both.
 """
 
 from __future__ import annotations
 
 from .demod import Baseband, demodulate, out_of_band_fraction, sample_baseband
+from .expect import Expectation, ExpectedTraps, SimResultLike, sim_delta
 from .metrics import (
     Blob,
     TrapFit,
@@ -50,29 +55,45 @@ from .metrics import (
 )
 from .pupil import ApertureGrid, PupilMode, axis_pupil, band_window, channel_pupil
 from .record import SampleRecord, from_arrays, load_samples
+from .report import (
+    CheckReport,
+    Tolerances,
+    averaging_window,
+    check_samples,
+    frame_reach,
+)
 from .transform import subtimes, zoom_field
 
 __all__ = [
     "ApertureGrid",
     "Baseband",
     "Blob",
+    "CheckReport",
+    "Expectation",
+    "ExpectedTraps",
     "PupilMode",
     "SampleRecord",
+    "SimResultLike",
+    "Tolerances",
     "TrapFit",
     "accumulate_intensity",
     "accumulate_marginals",
+    "averaging_window",
     "axis_pupil",
     "band_window",
     "best_focus",
     "channel_pupil",
+    "check_samples",
     "demodulate",
     "find_blobs",
     "fit_gaussian_1d",
+    "frame_reach",
     "from_arrays",
     "load_samples",
     "out_of_band_fraction",
     "profile_moments",
     "sample_baseband",
+    "sim_delta",
     "subtimes",
     "zoom_field",
 ]

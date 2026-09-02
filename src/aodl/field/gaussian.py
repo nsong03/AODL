@@ -2,7 +2,9 @@ r"""Closed-form 1D integrals ``\int u^n exp(-a u^2 + b u) du`` (``docs/PLAN.md``
 
 Every pupil term of the AODL stack is (polynomial) x (Gaussian) x exp(linear + quadratic
 phase) and separable in x and y, so each focal-field axis factor is a combination of the
-moments implemented here (Eq. S11 evaluated in closed form — no FFTs anywhere).
+moments implemented here (Eq. S11 evaluated in closed form — no FFTs anywhere in this
+simulation path; the independent checker of :mod:`aodl.check` is FFT-based by design and
+shares none of this module).
 
 ``a`` packs the input-beam radius, the chirp lens and the defocus Z; ``b`` packs the
 deflection and the image coordinate.  Both are complex with ``Re(a) > 0``; every function

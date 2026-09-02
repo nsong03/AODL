@@ -84,7 +84,7 @@ Model simplifications (documented, revisitable): flat diffraction efficiency acr
 (the measured efficiency ridge of Fig. S8 becomes a per-channel calibration hook later);
 weak-drive perturbative mixing rather than full coupled-mode Bragg theory.
 
-### 1.3 Focal field by direct equations — no FFTs
+### 1.3 Focal field by direct equations — no FFTs in the simulation path
 
 Objective (focal length F) performs a Fourier transform; at defocus Z (Eq. S11):
 
@@ -113,6 +113,10 @@ non-degenerate ones add in intensity. This reproduces the paper's interlaced-fad
 **Validation backend:** a deliberately dumb direct-quadrature evaluation of Eq. S11 (the
 paper's own approach, ~100 aperture points) lives in `field/reference.py`, used only in tests
 to bound the error of the Taylor truncation (coma) and of the uncropped-Gaussian assumption.
+
+The "no FFTs" rule scopes the **simulation** path (`field/`, `device/`, `engine`). Milestone 6
+adds a second, deliberately FFT-based path — `src/aodl/check/`, which reads *rendered samples*
+rather than the waveform IR and shares no code with the above (§3, M6).
 
 ### 1.4 Waveform synthesis (trajectory → RF)
 
@@ -259,6 +263,35 @@ parity-dependent.]
 for AWGs, report generation (band usage, axial budget, fade/shadow schedule; per-trap
 astig metrics live in `SpotMetrics`, ghost *prediction* deferred post-release — WO-19
 F-7), docs + notebook gallery, packaging.
+
+**M6 — The independent checker.**
+Everything above runs one way: trajectory → waveform IR → Taylor-expanded pupil terms →
+closed-form Gaussians. A sign error shared by the synthesizer and the simulator is invisible to
+every test that goes through both. `src/aodl/check/` closes that loop from outside: it takes
+the **rendered RF sample buffers** (carrier included, globally normalized), measures the drive
+back off them with one FFT per channel, rebuilds the aperture field at every point with *no*
+expansion (`T = exp(iCV)` with the +1 order cut out in the aperture's spatial-frequency
+domain), propagates it with a chirp-z transform, and fits the spots. It imports only
+`params`, `units`, `poly`, `trajectory.spec`, `device.conventions` and the samples-file schema
+constants — enforced by a source scan (`tests/test_check_independence.py`).
+
+✓ In `weak` mode (the linear Eq. S3 model the simulator implements) the two paths agree to
+**1e-9** on fields wherever Eqs. S5–S6 are exact — the midpoints of min-jerk moves, where the
+chirp's second derivative vanishes — and the checker *measures* the dropped cubic (coma) term
+where they are not (5 % mid-ramp on the M3 story); ✓ positions agree to 1e-3 w₀ and per-trap
+powers to 3e-4; ✓ in `bragg_band` mode the compression comes out `(2J₁(C)/C)²` to 1e-5 and
+degenerates to the weak model as `C²`; ✓ the guide's flagship 10×10 Shepard drive checks out at
+the §4 tolerances below; ✓ three deliberate corruptions of a 3×3 drive fail, each naming its
+metric: an `Ax` chirp-sign flip → `lateral` + `astigmatism`, a dropped `Bx` ladder tone →
+`missing trap`, 5 % on one `Bx` tone → `uniformity` (and only that).
+
+Verdict tolerances, relative in every case (`aodl.check.report.Tolerances`): lateral 0.05 w₀,
+axial and |ΔF| 0.05 z_R, waist 2 %, per-trap uniformity 3 %, off-lattice light 1 % and
+on-lattice light 10 % of the median trap peak, missing trap below 25 % of it. Report-only, by
+construction: the absolute intensity scale (a uniform four-channel gain is divided out by the
+render's global normalization and is optically invisible), the `sim_delta` diff against the
+simulator, `beat_std`, and the out-of-band splatter fraction.
+
 Stretch (post-v1): atom-motion Monte Carlo (Eq. S13), measured-efficiency calibration hooks,
 misalignment/delay-mismatch knobs (Eq. S29), cropped-aperture erf corrections.
 

@@ -7,7 +7,9 @@ Per frame the engine does exactly two things — expand the drive into pupil ter
 movie is built eagerly.  *Fields* are not: an intensity frame costs a grid, so
 :class:`SimResult` keeps the waveform set and hands out frames lazily
 (:meth:`SimResult.frame`, :meth:`SimResult.slice_xz`) by rebuilding that frame's terms on
-demand.  Nothing is sampled and no FFT is used anywhere (``CLAUDE.md``).
+demand.  Nothing is sampled and no FFT is used anywhere in **this simulation path**
+(``CLAUDE.md``); :mod:`aodl.check`, the independent M6 checker, is FFT-based on purpose and
+shares none of this code.
 
 **Retarded time is the thing to remember.**  A frame at observation time ``t`` is driven by
 the waveform at ``t_c = t - tau/2`` (``docs/conventions.md`` §7): the acoustic sample

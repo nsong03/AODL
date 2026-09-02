@@ -11,7 +11,8 @@ Physics reference throughout: Lu, Song, Xiang, Ho, Lee, Yan & Stamper-Kurn,
 Supplement; `Eq. 1` is in the main text.
 
 Contents: [install](#1-install) · [quickstart](#2-five-minute-quickstart) ·
-[concepts](#3-concepts) · [parameters](#4-parameter-reference) · [outputs](#5-outputs) ·
+[concepts](#3-concepts) · [parameters](#4-parameter-reference) ·
+[outputs](#5-outputs) (incl. [checking a drive](#55-checking-a-rendered-drive)) ·
 [fidelity and limits](#6-fidelity-and-limits) · [FAQ](#7-faq) ·
 [numbers](#8-numbers-this-guide-quotes)
 
@@ -24,11 +25,13 @@ Python 3.11+, and numpy / scipy / matplotlib / imageio (+ `imageio-ffmpeg`, for 
 ```bash
 pip install -e ".[dev]"     # editable install with pytest, ruff, mypy, jupyterlab, nbmake
 pytest                      # the full suite
-pytest --nbmake examples/   # execute the six notebooks (slower)
+pytest --nbmake examples/   # execute the seven notebooks (slower)
 ```
 
-Nothing else is required: there is no compiled extension, no FFT library, and no hardware
-in the loop. Waveform files and movies are ordinary `.npz` and `.mp4`.
+Nothing else is required: there is no compiled extension and no hardware in the loop.
+Waveform files and movies are ordinary `.npz` and `.mp4`. (The *simulation* uses no FFT at
+all; the independent checker of §5.5 uses `numpy.fft` and `scipy.signal.czt`, both of which
+come with the dependencies above.)
 
 ---
 
@@ -63,6 +66,7 @@ plan.save("move.npz")          # the deliverable: segment parameters, never samp
 | `plan.render_samples(rate)` | `{channel: float32 samples}` for the AWG, carrier included |
 | `plan.simulate(times=None)` | a `SimResult`: one `SpotMetrics` per tweezer per frame |
 | `plan.movie(path)` | simulate + render, hue ↔ Z, XZ panel, drive strip |
+| `plan.check()` | a `CheckReport`: the tweezers rebuilt from the *rendered samples*, verdict included (§5.5) |
 
 Nothing is simulated or rendered until you ask: `plan_motion` only synthesizes and reports.
 `examples/06_product_tour.ipynb` runs exactly this path end to end.
@@ -326,6 +330,81 @@ The XZ panel is the one part of a frame that cannot be patched — a spot sweeps
 focus along its Z axis — so it costs `nx·nz` per frequency group. Trading `xz_shape` and
 frame count is how a hundred-trap scene stays inside a render budget.
 
+### 5.5 Checking a rendered drive
+
+Everything in §5.3 runs one way: trajectory → waveform → Taylor-expanded pupil terms →
+closed-form Gaussians. A sign error shared by the synthesizer and the simulator cancels out of
+every test that goes through both. `plan.check()` closes that loop from outside — it renders
+the drive to **RF samples**, measures the drive back off them with an FFT, rebuilds the
+aperture field point by point with no expansion at all, propagates it with a chirp-z transform
+and fits the spots:
+
+```python
+# not run by tests/test_docs.py - a check renders the whole drive; examples/07 runs it
+report = plan.check()                  # ~9 deterministic frames, the full exp(iCV) crystal
+print(report.summary())                # verdict, worst residual per metric, blobs, caveats
+assert report.passed
+table = report.table                   # long format, one row per (frame, trap)
+```
+
+The rebuild imports nothing from `field/`, `device/aod*`, `engine` or the waveform IR — a
+source scan enforces it (`tests/test_check_independence.py`) — so the only things the two
+paths share are `params.py` and the sign table in `device/conventions.py`.
+
+`check_samples(samples, expect, ...)` is the same thing one level down, for samples that came
+from somewhere else: pass a `*_samples.npz` path (or a `SampleRecord`) and an `Expectation`.
+`Expectation.from_table(times, x, y, z, array, params)` builds one from a *measured* trajectory
+rather than a `TrajectorySpec`.
+
+**What the report carries**
+
+| Field | What it holds |
+|-------|---------------|
+| `passed`, `failures` | the verdict, and one line per violated gate — each naming its metric first |
+| `table` | `{column: array}`, one row per (frame, trap): fitted `x`, `y`, `z_lab`, `delta_f`, `wx`, `wy`, `peak`, `power`, `beat_std`, the residuals `dx`/`dy`/`dz`, model-free profile moments, and the flags saying which gates applied |
+| `blobs` | every canvas maximum that is *not* a requested trap, with `on_lattice` |
+| `worst()` | `{metric: (residual, tolerance, offender)}` — the numbers `summary()` prints |
+| `notes` | exclusions applied, the blind spot, the drive-specific caveats |
+| `out_of_band`, `sim_delta` | report-only diagnostics (splatter; a diff against `plan.simulate()`) |
+
+**Tolerances** (`aodl.check.Tolerances`, all relative):
+
+| Gate | Default | Measured against |
+|------|---------|------------------|
+| `lateral` | 0.05 | the focal waist `w₀` — 53 nm |
+| `axial` | 0.05 | the Rayleigh range `z_R`; also gates \|ΔF\| |
+| `waist` | 0.02 | `w₀`, on non-transient, non-fade frames |
+| `uniformity` | 0.03 | each frame's median trap peak, non-fade frames |
+| `blob_off_lattice` / `blob_on_lattice` | 0.01 / 0.10 | the median trap peak |
+| `missing_trap` | 0.25 | the median trap peak, below which a trap is "missing" |
+
+**What a PASS certifies — and what it does not.**
+
+* **Not the absolute intensity.** `render_samples` divides all four channels by one global
+  peak, and a common gain only rescales the image, so a drive rendered at half amplitude is
+  indistinguishable. Only the *pattern* of intensity is gated. This is the one blind spot, and
+  the report says so in `notes`.
+* **Not a drive whose two spacings are equal.** With `Δf_x == Δf_y` every anti-diagonal of the
+  array shares one optical frequency, so those traps are mutually coherent and their beat note
+  is exactly *zero* — no averaging window removes it, and what the checker measures is the
+  interference, correctly (§6.8, `docs/conventions.md` §4). Give the two axes different
+  spacings; the flagship's 1.0/1.3 MHz is why it has none.
+* **Not the edges of a fading array.** On a fading-Shepard axis the `p_A + p_B = 1` identity
+  holds every *interior* node exactly flat through a hand-over (measured to 1e-15), but the
+  ladder slides: the outermost node trades its light with the extended grid (§6.6/§6.7), so
+  the intensity gates skip the two edge lines and the report names them.
+* **Not the crystal's own nonlinearity.** The default `bragg_band` model *includes* compression
+  and intermodulation, so those show up as real residuals rather than as errors: a 10×10
+  Shepard array at `drive_strength = 0.30` has a crest factor of 4.6 and its per-trap intensity
+  spreads by ~20 % from Eqs. S20–S22, with the spots widening up to 8 % mid-hand-over
+  (`ρ = 0.30`, §6.4). Raise `uniformity`/`waist` for such a drive, or drive it more weakly —
+  the spread scales as `C²`.
+
+Frames before `2τ`, or with an aperture still filling, are marked *transient* and leave the
+waist and uniformity gates; while an aperture is genuinely filling the positions leave them
+too. `mode="weak"` swaps the full crystal for the linear Eq. S3 model the simulator implements
+— that is the cross-validation path, not the verdict path.
+
 ---
 
 ## 6. Fidelity and limits
@@ -451,6 +530,17 @@ an axis without a ladder is left for `auto_config` to size.
 `plan.report.mode` (`"s19"` or `"shepard"`) and `plan.report.worst_margin`, both printed by
 `summary()`. `plan.report.figure()` shows the same thing as a picture.
 
+**How do I know the simulation is right, and not just self-consistent?**
+Run `plan.check()` (§5.5). It renders the drive to RF samples and rebuilds the tweezers through
+a completely separate path — one FFT per channel to measure the drive, the literal `exp(iCV)`
+crystal with the `+1` order cut out in the aperture's spatial-frequency domain, a chirp-z
+transform to the image plane — sharing only `params.py` and the sign table. It reports where
+every trap actually is against where you asked for it, and it fails loudly when they disagree.
+Two things it will tell you that the simulator cannot: the crystal's *nonlinear* per-trap
+intensity spread (Eqs. S20–S22 to all orders, not just IM3), and the cubic pupil term Eqs.
+S5–S6 drop — on a hurried 25/30/25 µs move that term moves the light **0.07 w₀** off Table I's
+prediction, while the same move at 150/250/150 µs comes back inside 0.01 w₀.
+
 **Where is the physics derived?** In the notebooks, each of which verifies its own claims
 against closed form:
 
@@ -462,6 +552,7 @@ against closed form:
 | [04_array_lift_traverse](../examples/04_array_lift_traverse.ipynb) | the user story at Eq. 1 pace: deliverables, tracking, `mixing_order=3` census |
 | [05_fading_shepard](../examples/05_fading_shepard.ipynb) | ladders, windows, shadow tweezers, interlacing, the unhurried story, ρ and compression caveats |
 | [06_product_tour](../examples/06_product_tour.ipynb) | the product path: `plan_motion` → report → NPZ + samples → simulation → movie |
+| [07_fft_checker](../examples/07_fft_checker.ipynb) | the independent checker: what it rebuilds from the samples, the measured `2J₁(C)/C` compression, the blob audit, and a drive broken on purpose |
 
 ---
 
@@ -481,6 +572,16 @@ the constants of `aodl.units`:
 | co-chirp for `Z = 10 µm` | 48.54 MHz/ms | `10 * um / (2 * P.lens_scale) / (MHz / ms)` |
 | Eq. 1 budget at `Z = 10 µm` | 206 µs | `max_z_integral(P) / (10 * um) / us` |
 | … with `f_z_bias="auto"` | 412 µs | `max_z_integral(P, biased=True) / (10 * um) / us` |
+| checker aperture cell `Λ/8` | 0.8125 µm | `P.sound_speed / (8 * P.channels['Ax'].f_center) / um` |
+| checker aperture half-span | 4.992 w_in | `24576 * P.sound_speed / (8 * P.channels['Ax'].f_center) / 2 / P.optics.w_in` |
+| a frame's drive reach `half_span/v` | 15.36 µs | `24576 / (16 * P.channels['Ax'].f_center) / us` |
+| lateral gate `0.05 w₀` | 0.0533 µm | `0.05 * P.optics.waist0 / um` |
+| axial gate `0.05 z_R` | 0.1732 µm | `0.05 * P.optics.rayleigh / um` |
+
+Measured by the checker and quoted in §5.5: the flagship's ~20 % per-trap intensity spread and
+8 % waist swing at `drive_strength = 0.30` (`tests/test_check_flagship.py`); the 0.07 w₀
+departure from Table I on a 25/30/25 µs move, and the 1e-9 field agreement with the simulator
+at a min-jerk midpoint (`tests/test_check_weak_vs_sim.py`).
 
 Measured elsewhere and quoted above: ρ ≈ 0.057 for 1 % flatness and 0.43 % at 8 MHz
 (`examples/05` §7); ρ = 0.30 and a 7.6 % per-hand-over ripple for the array of

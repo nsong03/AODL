@@ -2,9 +2,11 @@
 
 Describe a move — *"take this 10×10 atom array from A to B, lifting 10 µm out of the plane on
 the way"* — and AODL writes the RF waveforms for the four AOD channels of a 3D-AODL and
-simulates the tweezers they make, in closed form, with no FFT anywhere. It is one call from
-the ask to two deliverables: a parametric waveform file for the AWG, and a movie of what the
-atoms will see.
+simulates the tweezers they make, in closed form, with no FFT anywhere in the simulation. It
+is one call from the ask to two deliverables: a parametric waveform file for the AWG, and a
+movie of what the atoms will see — and a third call, `plan.check()`, that re-derives the
+tweezers from the rendered RF samples through a completely separate FFT path and says whether
+they are where you asked for them.
 
 ```python
 from aodl import ArraySpec, Lift, TrajectorySpec, Translate, plan_motion
@@ -19,7 +21,8 @@ plan.save("move.npz")          # the AWG deliverable: segment parameters, never 
 ```
 
 `plan.render_samples(rate)` expands that file for the instrument, `plan.simulate()` returns
-the per-trap metrics, and `plan.movie("move.mp4")` renders the scene (tens of seconds).
+the per-trap metrics, `plan.movie("move.mp4")` renders the scene (tens of seconds), and
+`plan.check()` audits the rendered samples against the request from outside the simulator.
 
 ## Where to read next
 
@@ -27,6 +30,9 @@ the per-trap metrics, and `plan.movie("move.mp4")` renders the scene (tens of se
   parameter reference, outputs, fidelity limits with their measured numbers, FAQ.
 - **[`examples/06_product_tour.ipynb`](examples/06_product_tour.ipynb)** — the same path end
   to end in under a minute: report, waveform file, samples, simulation, movie.
+- **[`examples/07_fft_checker.ipynb`](examples/07_fft_checker.ipynb)** — the independent
+  checker: what it rebuilds from the samples, what a PASS certifies, and what breaking the
+  drive on purpose looks like.
 - Notebooks **01**–**05** — the physics, one milestone each and each verifying its own
   claims: [one AOD](examples/01_single_aod_sweep.ipynb) ·
   [crossed pair, arrays, IM3](examples/02_crossed_pair_diagonal.ipynb) ·
@@ -44,8 +50,9 @@ Physics follows Lu, Song, Xiang, Ho, Lee, Yan & Stamper-Kurn, *Astigmatism-free 
 Tweezer Control for Rapid Atom Rearrangement* ([arXiv:2510.11451](https://arxiv.org/abs/2510.11451));
 `S#` equation numbers in the code refer to its Supplement.
 
-**Built:** M1–M5 — single AOD → crossed pair → full 3D-AODL → fading-Shepard → product API.
-**Checked:** **334 tests**, six notebooks executed in CI
+**Built:** M1–M6 — single AOD → crossed pair → full 3D-AODL → fading-Shepard → product API →
+the independent FFT checker.
+**Checked:** **438 tests**, seven notebooks executed in CI
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs lint, types, the suite and the
 notebooks on every push), and an independent verification pass per milestone (M1–M5 accepted).
 
@@ -62,9 +69,15 @@ pytest --nbmake examples/   # execute the notebooks
 - **Aperture-window realism.** The simulator acts on the acoustic waveform segment actually
   present on each AOD at time *t* (retarded time), so chirp lensing, the fill transient and
   acoustic irising emerge rather than being added; the atom plane lags the drive by τ/2.
-- **No FFTs.** Focal fields are closed-form astigmatic-Gaussian integrals of Eq. S11 — exact
-  for chirped drives, evaluated at any (X, Y, Z, t). A direct-quadrature reference integrator
-  lives in `field/reference.py` and is used only by the tests.
+- **No FFTs in the simulation.** Focal fields are closed-form astigmatic-Gaussian integrals of
+  Eq. S11 — exact for chirped drives, evaluated at any (X, Y, Z, t). A direct-quadrature
+  reference integrator lives in `field/reference.py` and is used only by the tests.
+- **An independent checker.** `aodl.check` takes the *rendered RF samples* — the literal AWG
+  buffers — measures the drive back off them with an FFT, rebuilds the aperture field with no
+  Taylor expansion, and propagates it with a chirp-z transform. It imports nothing from
+  `field/`, `device/aod*`, `engine` or the waveform IR (a source scan enforces that), so a sign
+  error shared by the synthesizer and the simulator has nowhere to hide. `plan.check()` returns
+  a pass/fail report naming every residual.
 - **Frequency mixing.** Inter-AOD tone products (the 16-ray picture of Fig. S6) and intra-AOD
   intermodulation through IM3 (Eqs. S20–S22) are both modelled; Schroeder-phase suppression
   of the ghosts is measurable in simulation.

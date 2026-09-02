@@ -17,7 +17,7 @@ composition of the three, plus the report.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,6 +26,16 @@ import numpy as np
 from matplotlib.figure import Figure
 from numpy.typing import ArrayLike, NDArray
 
+from .check.expect import Expectation, SimResultLike
+from .check.pupil import ApertureGrid, PupilMode
+from .check.record import from_arrays
+from .check.report import (
+    CheckReport,
+    Tolerances,
+    averaging_window,
+    check_samples,
+    frame_reach,
+)
 from .engine import SimResult, simulate
 from .params import CHANNELS, AODLParams, default_1030
 from .trajectory.spec import TrajectorySpec
@@ -56,6 +66,23 @@ BAND_SAMPLES = 1201
 #: picosecond is :data:`aodl.waveform.tones.TIME_TOL`, far below anything the hardware
 #: resolves and far above float64 round-off on microsecond breakpoints.
 _LIVE_EPS = 1e-12
+
+#: Samples per :func:`aodl.waveform.export.render_samples` pass inside :meth:`MotionPlan.check`.
+#: A 93-tone fading drive renders ~25 % faster in 16 k blocks than in the 1 M default — one
+#: block's per-tone evaluation then stays in cache.
+_RENDER_CHUNK = 1 << 14
+
+#: Extra drive [s] rendered on each side of what the requested frames strictly need
+#: (:meth:`MotionPlan.check`).  The analytic-signal edge ringing of
+#: :func:`aodl.check.demod.demodulate` decays as ``1 / (pi f_s dt)`` from a record end, so five
+#: microseconds of slack puts it under 1e-4 before it reaches an aperture cell carrying any
+#: light at all.
+_RENDER_PAD = 5.0 * us
+
+#: Default sub-times per frame, mirroring :func:`aodl.check.report.check_samples`.  It is
+#: named here because the *coverage* bound depends on it: a frame averages over a window
+#: whose width the beat comb and this count together decide.
+DEFAULT_SUBTIMES = 64
 
 
 # ------------------------------------------------------------------------ band occupancy
@@ -386,14 +413,28 @@ class MotionPlan:
 
     The object :func:`plan_motion` returns and the one a lab keeps: :meth:`save` writes the
     parametric NPZ that goes into version control, :meth:`render_samples` expands it for the
-    AWG, :meth:`simulate` and :meth:`movie` show what the tweezers will do, and
+    AWG, :meth:`simulate` and :meth:`movie` show what the tweezers will do, :meth:`check`
+    verifies the *rendered samples* against the request from outside the simulator, and
     :attr:`report` says whether any of it is close to a limit.
+
+    Attributes
+    ----------
+    spec, params, wfs, report:
+        The request, the hardware, the drive, and what :func:`plan_motion` made of them.
+    options:
+        The synthesis options this plan was built with — ``retard_compensate``, ``amp``,
+        ``f_z_bias``, ``switch_ramp`` and the resolved ``shepard`` mode.  They are not
+        recoverable from the waveforms (a compensated and an uncompensated drive are both
+        perfectly good drives, they simply encode different instants), and :meth:`check` needs
+        them to know what the drive was *asked* for.  Keyword-constructed and defaulted, so a
+        :class:`MotionPlan` built the pre-M6 way still works.
     """
 
     spec: TrajectorySpec
     params: AODLParams
     wfs: WaveformSet
     report: PlanReport
+    options: dict[str, Any] = field(default_factory=dict)
 
     # -- outputs
 
@@ -451,6 +492,175 @@ class MotionPlan:
     def summary(self) -> str:
         """Shorthand for ``self.report.summary()``."""
         return self.report.summary()
+
+    # -- the independent check
+
+    def expectation(self, fade_pad: float = 0.0) -> Expectation:
+        """What this plan *asked* for, as the checker's :class:`~aodl.check.expect.Expectation`.
+
+        Built from :attr:`spec`, :attr:`params` and :attr:`options` — never from the waveforms —
+        plus the hand-over schedule of :attr:`PlanReport.fade_events`, converted from drive
+        times to **observation** times by adding ``tau/2`` (``docs/conventions.md`` §7): a fade
+        centred on the drive at ``t`` reaches the atom plane half an aperture transit later,
+        whether or not the drive was retard-compensated.
+        """
+        tau = self._tau()
+        return Expectation(
+            spec=self.spec,
+            params=self.params,
+            retard_compensated=bool(self.options.get("retard_compensate", False)),
+            amp=float(self.options.get("amp", 1.0)),
+            shadows=tuple(
+                (event.time + 0.5 * tau, event.axis, event.shadow)
+                for event in self.report.fade_events
+            ),
+            fade_pad=float(fade_pad),
+        )
+
+    def check_times(
+        self, mode: PupilMode = "bragg_band", k_subtimes: int = DEFAULT_SUBTIMES
+    ) -> Float:
+        """The default frame grid of :meth:`check` — nine or fewer deterministic instants.
+
+        ``2 tau`` (the first frame with the aperture grid fully lit), then every move's midpoint
+        and every seam, and finally the end of the trajectory — each shifted by ``tau/2`` unless
+        the drive was retard-compensated, so that what is *observed* at the frame is what was
+        *requested* at that waypoint.  Frames the record could not reach are dropped: a frame
+        gathers drive over ``t -+ (W/2 + tau/2 + grid.half_span/v)``, the aperture grid running
+        wider than the crystal (:func:`aodl.check.report.frame_reach`) and the frame averaging
+        over a beat window on top of that (:func:`aodl.check.report.averaging_window`).
+        """
+        tau = self._tau()
+        shift = 0.0 if self.options.get("retard_compensate", False) else 0.5 * tau
+        marks = [2.0 * tau]
+        elapsed = 0.0
+        for move in self.spec.moves:
+            marks.append(elapsed + 0.5 * move.duration + shift)
+            elapsed += move.duration
+            marks.append(elapsed + shift)
+        frames = np.unique(np.asarray(marks, dtype=np.float64))
+        limit = self._frame_limit(mode, k_subtimes)
+        kept = frames[frames <= limit]
+        if kept.size == 0:
+            raise ValueError(
+                f"none of this plan's default check frames fit inside the rendered drive: the "
+                f"earliest is {frames[0] / us:.4g} us and the record supports frames only up to "
+                f"{limit / us:.4g} us.  Synthesize with a longer t_pad."
+            )
+        return kept
+
+    def check(
+        self,
+        *,
+        times: ArrayLike | None = None,
+        rate: float = DEFAULT_SAMPLE_RATE,
+        mode: PupilMode = "bragg_band",
+        tolerances: Tolerances | None = None,
+        sim: SimResultLike | None = None,
+        fade_pad: float = 0.0,
+        **kwargs: Any,
+    ) -> CheckReport:
+        """Render this drive to samples and check the tweezers they make.  The M6 gate.
+
+        The samples are rendered in ``float64`` with their normalization kept
+        (``return_scale=True``), wrapped in a :class:`~aodl.check.record.SampleRecord`, and
+        handed with :meth:`expectation` to :func:`aodl.check.report.check_samples`.  Nothing of
+        the simulator is involved: the verdict comes from an FFT rebuild of the literal RF
+        buffers (:mod:`aodl.check`).
+
+        Only the span the requested frames actually need is rendered — ``[t - tau/2 -
+        half_span/v, t - tau/2 + half_span/v]`` over the frames, plus a few microseconds of
+        slack for the demodulation's edge ringing — so checking a handful of frames of a long
+        drive costs a short render.  The normalization is the peak of *that* window rather than
+        of the whole buffer, which changes nothing physical: ``samples * normalization`` is the
+        same Eq. S1 drive either way.
+
+        Parameters
+        ----------
+        times:
+            Frame observation times [s]; ``None`` uses :meth:`check_times`.
+        rate:
+            Sample rate [S/s] to render at (default 625 MS/s, the product AWG).
+        mode:
+            Pupil model — ``"bragg_band"`` (default, the full crystal) or ``"weak"``.
+        tolerances:
+            :class:`aodl.check.report.Tolerances`; ``None`` uses the defaults.
+        sim:
+            Optional :class:`aodl.engine.SimResult` to diff against, report-only.
+        fade_pad:
+            Half-width [s] of the hand-over exclusion (:attr:`aodl.check.expect.
+            Expectation.fade_pad`).  ``0`` — the default — gates every frame: on an array drive
+            the hand-over disturbance is confined to the *edge lines* of a fading axis, which
+            the checker excludes per trap instead, so dropping whole frames would only weaken
+            the gate.  Set it to a fraction of ``tau`` for a single-tweezer fading drive, whose
+            shadow tweezers are then whitelisted while they exist.
+        **kwargs:
+            Forwarded to :func:`aodl.check.report.check_samples` (``k_subtimes``, ``n_z``,
+            ``z_half_range``, ``oversample``).
+
+        Returns
+        -------
+        A :class:`aodl.check.report.CheckReport`.
+        """
+        k_subtimes = int(kwargs.get("k_subtimes", DEFAULT_SUBTIMES))
+        frames = (
+            self.check_times(mode, k_subtimes)
+            if times is None
+            else np.atleast_1d(np.asarray(times, dtype=np.float64)).ravel()
+        )
+        if frames.size == 0:
+            raise ValueError("MotionPlan.check() needs at least one frame time")
+        limit = self._frame_limit(mode, k_subtimes)
+        worst = float(np.max(frames))
+        if worst > limit:
+            raise ValueError(
+                f"frame time t = {worst / us:.4g} us cannot be checked: a frame gathers drive "
+                f"over t -+ (W/2 + tau/2 + grid.half_span/v), and this drive is only programmed "
+                f"to {self.wfs.t_span[1] / us:.4g} us, which supports frames up to "
+                f"{limit / us:.4g} us.  Synthesize with a longer t_pad, or ask for earlier "
+                f"frames."
+            )
+
+        tau = self._tau()
+        reach = frame_reach(ApertureGrid.design(self.params, mode), self.params)
+        # The render has to cover every sub-time's aperture, not just the frame's own.
+        edge = 0.5 * averaging_window(self.expectation(), k_subtimes) + reach + _RENDER_PAD
+        t0, t1 = self.wfs.t_span
+        span = (
+            max(t0, float(np.min(frames)) - 0.5 * tau - edge),
+            min(t1, worst - 0.5 * tau + edge),
+        )
+        arrays, scale = cast(
+            tuple[dict[str, NDArray[Any]], float],
+            render_samples(
+                self.wfs,
+                rate,
+                span,
+                dtype=np.float64,
+                chunk=_RENDER_CHUNK,
+                return_scale=True,
+            ),
+        )
+        record = from_arrays(arrays, rate, self.params, t_start=span[0], normalization=scale)
+        return check_samples(
+            record,
+            self.expectation(fade_pad),
+            times=frames,
+            mode=mode,
+            tolerances=tolerances,
+            sim=sim,
+            **kwargs,
+        )
+
+    def _tau(self) -> float:
+        """The stack's aperture transit time [s] — the longest of the four channels."""
+        return max(aod.transit_time for aod in self.params.channels.values())
+
+    def _frame_limit(self, mode: PupilMode, k_subtimes: int = DEFAULT_SUBTIMES) -> float:
+        """Latest checkable frame, ``t_end + tau/2 - half_span/v - W/2``."""
+        reach = frame_reach(ApertureGrid.design(self.params, mode), self.params)
+        half_window = 0.5 * averaging_window(self.expectation(), k_subtimes)
+        return self.wfs.t_span[1] + 0.5 * self._tau() - reach - half_window
 
 
 # ------------------------------------------------------------------------------ the door
@@ -626,7 +836,16 @@ def plan_motion(
         description=wfs.description,
         wfs=wfs,
     )
-    return MotionPlan(spec=spec, params=hardware, wfs=wfs, report=report)
+    # The synthesis options are not recoverable from the waveforms, and M6's checker needs
+    # them to know what the drive was *asked* for (MotionPlan.options).
+    options: dict[str, Any] = {
+        "retard_compensate": bool(synth_opts.get("retard_compensate", False)),
+        "amp": float(synth_opts.get("amp", 1.0)),
+        "f_z_bias": synth_opts.get("f_z_bias", 0.0),
+        "switch_ramp": _switch_ramp_of(wfs),
+        "shepard": mode,
+    }
+    return MotionPlan(spec=spec, params=hardware, wfs=wfs, report=report, options=options)
 
 
 __all__ = [

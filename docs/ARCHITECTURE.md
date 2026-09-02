@@ -21,12 +21,18 @@ layout, core data types, and dependencies before implementation.
 3. **Terms, not grids, until the last moment.** Device physics reduces each frame to a list
    of *terms* (complex amplitude + per-axis Taylor coefficients + optical frequency). Fields
    are closed-form Gaussians per term, evaluated only on small patches around each spot.
-   No FFTs; grids appear only at rendering.
+   No FFTs *in the simulation path*; grids appear only at rendering. The M6 checker
+   (`check/`) is the deliberate exception — it is FFT-based on purpose and shares none of
+   this code (principle 6).
 4. **One sign authority.** All orientation/sign conventions (sound directions, +1-order
    signs, axis handedness) live in `device/conventions.py` and are pinned by tests against
    the paper's Table I. Nothing else hardcodes a sign.
 5. **Physics functions cite equations.** Every function implementing paper physics carries
    the equation number (`Eq. S8`) in its docstring; tests assert the formulas numerically.
+6. **One independent verification path.** `check/` re-derives the tweezers from the *rendered
+   samples* and is forbidden, by a source scan, from importing anything of the simulator's
+   beyond `params`, `units`, `poly`, `trajectory.spec`, `device.conventions` and the
+   samples-file schema constants. Truth enters it only as samples plus the compiled trajectory.
 
 ## 1. Layer diagram
 
@@ -97,6 +103,14 @@ AODL/
 │   │   ├── focal.py          # per-term U(X,Y,Z); frequency grouping; patch accumulation
 │   │   ├── measure.py        # centroid, waists, Z̄, ΔF, σ_astig per spot (analytic)
 │   │   └── reference.py      # direct quadrature of Eq. S11 (tests only)
+│   ├── check/                # the independent FFT checker (M6) — reads *samples*, not the IR
+│   │   ├── record.py         # SampleRecord: the AWG buffers + rate + normalization
+│   │   ├── demod.py          # one FFT per channel → complex baseband z(t) (Eqs. S1–S2)
+│   │   ├── pupil.py          # aperture rebuild at du = Λ/8; +1-order band selection (S1–S4)
+│   │   ├── transform.py      # zoom (chirp-z) Eq. S11 + defocus; golden-ratio sub-times
+│   │   ├── metrics.py        # profile fits, w²(Z) best focus, blob audit, accumulation
+│   │   ├── expect.py         # what was *asked* for: Table I positions from the spec
+│   │   └── report.py         # tolerances, verdict, check_samples() driver
 │   ├── engine.py             # simulate(wfs, times) → SimResult (params from wfs.params)
 │   ├── viz/
 │   │   ├── style.py          # colormaps (Z-hue), panel layout defaults
@@ -108,7 +122,8 @@ AODL/
 │   ├── 03_aodl_3d_motion.ipynb          # M3
 │   ├── 04_array_lift_traverse.ipynb     # M3 (the user story)
 │   ├── 05_fading_shepard.ipynb          # M4
-│   └── 06_product_tour.ipynb            # M5 (the lab-facing demo)
+│   ├── 06_product_tour.ipynb            # M5 (the lab-facing demo)
+│   └── 07_fft_checker.ipynb             # M6 (the independent checker)
 └── tests/                            # (as built; one file per module plus per-milestone
     ├── test_poly.py … test_tones.py  #  integration suites)
     ├── test_conventions.py  test_device_single_aod.py  test_mixing.py  test_window.py
@@ -116,6 +131,10 @@ AODL/
     ├── test_ramps.py  test_serialize.py  test_export.py  test_spec.py
     ├── test_synthesis.py  test_synthesis_s19.py  test_synthesis_options.py
     ├── test_shepard.py  test_engine.py  test_api.py  test_docs.py
+    ├── test_check_demod.py  test_check_pupil.py  test_check_transform.py
+    ├── test_check_metrics.py  test_check_independence.py  test_check_expect.py
+    ├── test_check_weak_vs_sim.py  test_check_bragg.py  test_check_verdict.py
+    ├── test_check_flagship.py                          # the M6 CI gate
     └── test_integration_m1.py  _m2.py  _m3.py  _m4.py   # per-milestone acceptance
                                                  # (spec → waveforms → sim → measured)
 ```
@@ -204,7 +223,7 @@ Runtime (deliberately minimal for lab deployability):
 | Package | Why |
 |---------|-----|
 | `numpy` | all array math |
-| `scipy` | `special.wofz` (complex erf for aperture-edge/fill closed forms); `integrate` in tests |
+| `scipy>=1.8` | `special.wofz` (complex erf for aperture-edge/fill closed forms); `signal.czt` (the M6 checker's zoom transform — added in 1.8); `integrate` in tests |
 | `matplotlib` | frame rendering, panels |
 | `imageio` + `imageio-ffmpeg` | mp4 encoding without system ffmpeg |
 
@@ -223,3 +242,9 @@ No JAX/torch/numba: term counts (~10²–10³/frame) and patch evaluation keep p
 5. Waveform storage/export: generic NPZ containing the **parametric function
    representation** (segments + parameters); sample expansion is a separate render step.
 6. Usable band: ±10 MHz on all four channels.
+7. (2026-09-02, M6) **Checker pupil model:** the default is the full `exp(iCV)` crystal with
+   the `+1` order selected in the aperture's spatial-frequency domain (`"bragg_band"`), on a
+   grid pinned at `du = Λ/8` so the order comb's aliases land on order centres. The linear
+   Eq. S3 model (`"weak"`) is kept as the cross-validation path against the simulator, not as
+   the verdict path. Placement: `check_samples()` plus `MotionPlan.check()`, with
+   `tests/test_check_flagship.py` as the CI gate.

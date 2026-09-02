@@ -138,9 +138,11 @@ def test_the_scan_finds_every_source_file() -> None:
     assert names == {
         "__init__.py",
         "demod.py",
+        "expect.py",
         "metrics.py",
         "pupil.py",
         "record.py",
+        "report.py",
         "transform.py",
     }
 

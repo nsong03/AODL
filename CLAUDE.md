@@ -35,7 +35,10 @@ pytest --nbmake examples/        # execute notebooks (only when asked)
   (rotating frame), per Eq. S2.
 - Parametric NPZ files contain segment parameters, never samples.
 - Notebooks: thin cells (logic lives in `src/aodl/`), outputs cleared before commit.
-- No FFTs in the simulation path. `field/reference.py` (quadrature) is tests-only.
+- No FFTs in the *simulation* path (`field/`, `device/`, `engine`); `field/reference.py` is
+  tests-only quadrature. `src/aodl/check/` is the deliberately FFT-based independent checker
+  and must not import the simulation's field/device internals (see its allowlist, enforced by
+  `tests/test_check_independence.py`).
 - Type-annotate public APIs; dataclasses for configs; numpy-vectorized evaluation.
 
 ## Git
