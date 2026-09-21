@@ -39,6 +39,10 @@ the per-trap metrics, `plan.movie("move.mp4")` renders the scene (tens of second
   [the full 3D-AODL](examples/03_aodl_3d_motion.ipynb) ·
   [the user story](examples/04_array_lift_traverse.ipynb) ·
   [fading-Shepard](examples/05_fading_shepard.ipynb).
+- **[`docs/theory_waveform.md`](docs/theory_waveform.md)** — the drive waveform in depth:
+  frequency mixing (where IM3 ghosts land and why an equally spaced ladder hides them inside
+  your traps), phase optimization (crest factor and ghost suppression), what the simulator
+  models, and what it deliberately does not.
 - **[`docs/PLAN.md`](docs/PLAN.md)** (physics model and milestone ladder) ·
   **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** (package layout) ·
   **[`docs/conventions.md`](docs/conventions.md)** (axes, signs, retarded time) ·
