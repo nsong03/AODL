@@ -55,12 +55,22 @@ generated code shows how).
    ```
 
    (`aodl.field.focal.spot_params` is the same formula; `SpotMetrics.wx/wy` are these radii
-   at `Z = z`.) Groups add in intensity (they are distinct optical frequencies — `docs/PLAN.md`
-   §1.3). Hue encodes `z` exactly as `aodl.viz.style` does (blue below, white at 0, red above;
-   luminance = intensity). The approximation drops the fill-edge truncation, irising and
-   intra-group interference; the **"exact" frame** button fetches the closed-form frame from the
-   backend so the two can be compared side by side. The frontend must label the view
-   "astigmatic Gaussian approximation" and the exact view "closed form (Eq. S11)".
+   at `Z = z`.) `P = SpotMetrics.power` puts the approximation on the **same absolute intensity
+   scale** as `intensity_frame` (`measure.py`: an unwindowed term's power is `peak·wx·wy·π/2`),
+   so the approximation and the exact frame are directly comparable. Groups add in intensity
+   (they are distinct optical frequencies — `docs/PLAN.md` §1.3). **One spot per spatial cluster,
+   not per frequency group**: a frequency group can hold spatially separate degenerate terms —
+   the Eq. S31 shadow-tweezer pair at `±deflection_scale·Δf` during a fade, or the two array
+   traps two pitches apart of `docs/guide.md` §6.7 — and `measure()` would report their
+   power-weighted centroid (a phantom spot on the main trap carrying the shadows' power). The
+   backend therefore splits every group by the term centres `theta1·F/k` (clusters within
+   `1 w0`) and measures each cluster separately; spatially separated degenerate terms have
+   negligible pupil overlap, so adding the clusters in intensity is exact to that overlap. Hue
+   encodes `z` exactly as `aodl.viz.style` does (blue below, white at 0, red above; luminance =
+   intensity). The approximation drops the fill-edge truncation, irising and intra-cluster
+   interference; the **"exact" frame** button fetches the closed-form frame from the backend so
+   the two can be compared side by side. The frontend must label the view "astigmatic Gaussian
+   approximation" and the exact view "closed form (Eq. S11)".
 3. **Retardation is shown, not hidden.** A frame at observation time `t` is driven by the
    waveform at `t_c = t − τ/2`; the acoustic content inside the aperture at time `t` is the
    drive segment `[t − τ, t]` (`docs/conventions.md` §7). The RF panel therefore shades
@@ -92,46 +102,109 @@ generated code shows how).
    δ(f) = Δk L / 2 ≈ (π λ L / (2 n v²)) · (f − f_0)²        [rad]
    ```
 
-   With `n ≈ 2.26`, `v = 650 m/s`, `λ = 1030 nm`, `L = 4 mm` this gives a 3 dB full bandwidth of
-   ≈ 29 MHz — the right order for a DTSXY-400. **Do not** use the `C₂ ∝ n_o³/(v⁴ (n_e² − n_o²))`
-   expression from `integratedphotonicsinvestigation/AODLsimulator/aodl_sim/diffraction.py`;
-   it is dimensionally off by ~10⁴ and gives GHz bandwidths. Parameters exposed: `f_tpm`
-   (default = `f_center`), interaction length `L`, refractive index `n`, peak efficiency
-   `η_peak = sin²Γ` (sets `Γ`). The second AOD of a pair (B) sees an incidence angle shifted by
-   the first AOD's deflection: `θ_i,B = θ_design,B + γ · λ (f_A − f_0) / v` with the angular
-   coupling `γ ∈ [−1, 1]` (default `+1`: the 4f relay of magnification −1 inverts the ray, and
-   the counter-propagating B grating is matched so that A's deflection *compensates* B's Bragg
-   drift — this is what produces the paper's wider B-band ridge in Fig. S1/S8). The pair map
-   is `η_pair(f_A, f_B) = η_A(f_A) η_B(f_B; f_A)`. Report deflection angle
+   With `n ≈ 2.26`, `v = 650 m/s`, `λ = 1030 nm`, `L = 4 mm`, `η_peak = 0.85` this gives a 3 dB
+   full bandwidth of ≈ 28 MHz (27.9 MHz; `Γ = asin√η_peak = 1.17` narrows the sinc slightly
+   relative to the small-Γ 28.7) — the right order for a DTSXY-400. **Do not** use the
+   `C₂ ∝ n_o³/(v⁴ (n_e² − n_o²))` expression from
+   `integratedphotonicsinvestigation/AODLsimulator/aodl_sim/diffraction.py`; it is off by
+   ~10⁴ and gives GHz bandwidths. Parameters exposed: `f_tpm` (default = `f_center`; it is a
+   *crystal-cut* parameter — pure [110] propagation would put it at 511 nm-equivalent
+   frequencies far above the band, commercial cuts place it near band centre), interaction
+   length `L`, refractive index `n`, peak efficiency `η_peak = sin²Γ` (sets `Γ`). Caveats for
+   the docstring and the UI: the plane-wave single-`L` model omits acoustic walk-off and
+   divergence (which widen the angular acceptance), optical activity near [001] and the TeO₂
+   mid-band degeneracy dip; the measured maps of the paper's Fig. S1c/S8 are the calibration
+   target.
+
+   **The second AOD of a pair (B) sees an incidence angle shifted by the first AOD's
+   deflection, and that shift is an additive mismatch, not a frequency shift.** At tangential
+   phase matching `θ_i'(f_tpm) = 0`, so nothing about `f_B` can compensate an incidence change
+   to first order. With `K_B = 2π f_B / v`, the internal deflection of A
+   `Δθ_A = λ (f_A − f_tpm) / (n v)`, and an effective angular coupling `γ`:
+
+   ```
+   δ_B(f_B; f_A) = (L/2) K_B [θ_in − θ_i(f_B)]
+                 = C₂ [ (f_B − f_tpm)² − 2 γ f_tpm (f_A − f_tpm) ],      C₂ = π λ L / (2 n v²)
+   ```
+
+   Consequences, which are exactly the paper's "Design caveats → limited first-AOD bandwidth":
+   at fixed `f_B` the pair efficiency falls off in `f_A` on a scale `∝ 1/(L γ)` (1 MHz of A
+   detuning is one full B half-width at `L = 4 mm`, `γ = 1`), while in `f_B` it keeps the
+   TPM-broadened width — **the first AOD's usable band is narrow because its deflection
+   detunes the second**; nothing is compensated. The map is asymmetric in `f_A`: on the side
+   where `γ (f_A − f_tpm) > 0` the incidence angle rises above the Bragg-curve minimum and B
+   re-matches on the parabolic ridge `(f_B − f_tpm)² = 2 γ f_tpm (f_A − f_tpm)` (the two matched
+   frequencies of anisotropic diffraction), on the other side it is cut off. `γ ∈ [−1, 1]` is
+   the signed fraction of A's deflection that reaches B's Bragg plane: `|γ| = 1` for an ideal
+   4f relay of magnification −1 and plane acoustic waves; smaller values stand in for the
+   angular-acceptance widening by acoustic divergence that the single-`L` model lacks. The
+   single-`L` model cannot give both B ≈ 30 MHz and A "a few times narrower" at `γ = 1`, so the
+   **default is `γ = 0.2`** (A usable ≈ ±5 MHz at `L = 4 mm`); the sign is a geometry
+   convention the user may flip. The pair map is `η_pair(f_A, f_B) = η_A(f_A) η_B(f_B; f_A)`.
+   Report `first_aod_usable_MHz` — the full width in `f_A` over which `max_{f_B ∈ band}
+   η_pair ≥ ½ η_pair,max`, computed numerically from the map (the analytic one-sided value is
+   `δ₃ / (C₂ f_tpm |γ|)` with `η(Γ, δ₃) = ½ η(Γ, 0)`) — this is the number the brief's
+   "efficiency vs deflection angle of the first pair" is about. Report deflection angle
    `Δθ = λ (f − f_center) / v` [mrad] alongside frequency on every efficiency plot.
-   *Trajectory efficiency*: at each frame, per channel, the amplitude-weighted mean of
-   `η(f_center + f_n(t_c))` over the live tones; the product over the four channels is the
-   predicted relative trap power. This is a *model* with user-set parameters, not a measurement
-   — the UI must say so.
+   *Trajectory efficiency*: at each frame, per channel, the amplitude²-weighted mean of
+   `η(f_center + f_n(t_c))` over the live tones (for a B channel at the A channel's live
+   frequency — exact for Eq. S19, amplitude²-weighted over the A ladder for Shepard); the
+   product over the four channels is the predicted relative trap power. This is a *model* with
+   user-set parameters, not a measurement — the UI must say so.
 7. **Misalignment model** (`aodl_advanced.pupil`): the pupil of AOD `μ` is evaluated on a 2D
-   grid `(x, y)` at the retarded time of its own, possibly misaligned, sound axis:
+   grid `r = (x, y)` at the retarded time of its own, possibly misaligned, sound axis. With the
+   channel's axis unit vector `ê_μ` (x or y, from `conventions`), its perpendicular `ê_⊥`, the
+   aperture offset `d_μ = δ_∥ ê_μ + δ_⊥ ê_⊥`, the sound-axis rotation `θ_μ` about the optical
+   axis, the 4f magnification mismatch `m_μ` and the acoustic delay error `δt_μ` (Eq. S29):
 
    ```
-   u_μ = cos θ_μ (x − δ_∥,μ ê_μ·…)        — in words: rotate the grid by the sound-axis
-                                             rotation θ_μ about the optical axis, then shift by
-                                             the aperture offset (δ_∥ along the sound axis,
-                                             δ_⊥ across it)
-   t_ret,μ(x, y) = t − τ/2 − s_μ u_μ / v_μ − δt_μ          (Eq. S4 + Eq. S29 delay error δt_μ)
-   v_μ = v · m_μ                                            (4f magnification mismatch m_μ)
-   T_μ = i J₁(C |E_μ(t_ret)|) · E_μ*(t_ret) / |E_μ(t_ret)|   (exact first-order envelope law;
-                                                            reduces to (iC/2) A e^{−i phase}
-                                                            as J₁(x) → x/2)
+   r'    = R(−θ_μ) (r − d_μ),        u_μ = r' · ê_μ
+   v_μ   = m_μ v
+   t_ret = t − τ/2 − s_μ u_μ / v_μ − δt_μ                       (Eq. S4 + Eq. S29)
+   fill  : s_μ u_μ ≤ m_μ [ v (t − δt_μ) − D/2 ]                 (conventions.is_filled, scaled)
+   E_μ(t) = Σ_n a_n A_n(t) e^{i (phase_n(t) + phase0_n)}        (complex analytic drive, rotating
+                                                                frame, carrier dropped)
+   T_μ   = i J₁(C |E_μ(t_ret)|) · E_μ*(t_ret) / |E_μ(t_ret)|     ("j1": the +1 order of the thin
+                                                                phase grating exp(iCV) in the
+                                                                quasi-static limit, all orders in
+                                                                C; → (iC/2) E* as J₁(x) → x/2,
+                                                                i.e. aodl's (iC/2) A e^{−i phase})
+         = (iC/2) E_μ*(t_ret)                                   ("weak": Eq. S3, aodl's model)
    ```
 
-   where `E_μ(t) = Σ_n A_n(t) e^{i phase_n(t)}` is the complex analytic drive of the channel
-   (rotating frame, carrier dropped). Fill masks (`s_μ u_μ ≤ v_μ (t − δt_μ) − D/2`) apply as in
-   `aodl.device.conventions.is_filled`. Optional pointing tilt adds `exp(i k (α_x x + α_y y))`.
-   The four factors multiply, times the input Gaussian `exp(−(x²+y²)/w_in²)` (uncropped, as in
-   `aodl`), and the field at lab plane `Z` is the Eq. S11 integral with `Z_S11 = Z_LAB_SIGN·Z`,
-   evaluated with a 2D chirp-z (zoom) transform onto a focal patch. Beat averaging: the
-   intensity is averaged over `K` sub-times spread uniformly over one period of the smallest
-   tone spacing present (default `K = 8`; `K = 1` = instantaneous). Signs come from
-   `aodl.device.conventions` — never hardcode one.
+   `a_n = √(η(f)/η_peak)` is the *relative* Bragg-efficiency amplitude of tone `n` when an
+   `EfficiencyModel` is attached (relative, so the aligned centred `weak` case reproduces `aodl`
+   exactly and the Raman–Nath-type `J₁` saturation and Kogelnik's `sin²Γ` are not
+   double-counted); for a B channel `η_B` depends on the A channel's live frequency at `t_c`
+   (closure; amplitude²-weighted over a Shepard A ladder). Expanding the `J₁` law to `C³`
+   reproduces `aodl.device.mixing`'s IM3 and compression table exactly. Optional pointing tilt
+   adds `exp(i k (α_x x + α_y y))`. Under rotation or `m_μ ≠ 1` a channel's carrier tilt
+   `s 2π f_c u_μ / v_μ` no longer cancels its partner's; it is common to every term — a static
+   pointing offset (~10 µm at 10 mrad) — and is dropped as "alignment", but reported as
+   `static_offset_um` per channel. The four factors multiply, times the input Gaussian
+   `exp(−(x²+y²)/w_in²)` (uncropped, as in `aodl`), and the field at lab plane `Z` is the
+   Eq. S11 integral with `Z_S11 = Z_LAB_SIGN·Z`, evaluated with a 2D chirp-z (zoom) transform
+   onto a focal patch. Signs come from `aodl.device.conventions` — never hardcode one.
+
+   **Beats are handled by frequency decomposition, not by time averaging.** Uniform sub-time
+   averaging over one period of the smallest spacing cancels only harmonics of that period
+   (measured: 19–79 % of the cross terms survive for an (8, 6.5) MHz pair, and the
+   0.1 MHz-commensurate 1.0/1.3 MHz arrays need a 10 µs window). Instead each channel's
+   transmission is decomposed into *lines*: under `"weak"` the lines are the tones themselves
+   (`T_μ = Σ_n (iC/2) a_n A_n e^{−i phase_n}`, one 2D factor per live tone); under `"j1"` the
+   channel's tones sit on a comb `f_ref(t_c) + m Δf_μ` (true for every drive `plan_motion`
+   produces: Eq. S19 ladders, Shepard ladders, single tones), so `T_μ(u, t_ret(u) + k/(K Δf_μ))`
+   is evaluated at `K` sub-times per pixel and a `K`-point DFT along `k` yields the lines at
+   `f_ref + m Δf_μ`, `|m| ≤ (K−1)/2` (fundamentals, compression, IM3 …), keeping lines above
+   `1e-3` of the strongest (`K = 1` is the frozen, instantaneous pupil). The Cartesian product
+   of the four channels' lines is grouped by optical frequency sum (1 kHz tolerance — exactly
+   `aodl.field.focal.group_terms`' rule), each group's pupil is the sum of its products, one
+   zoom transform per group, and the groups add in intensity. This *is* the beat-averaged
+   intensity, with the same approximation `aodl` makes. Groups are capped (default 128; beyond
+   that the brightest are kept and a note says so); the XZ scan uses `nz ≤ 32` and only the
+   brightest ≤ 6 groups; the aligned reference frame is cached per
+   `(plan_id, time, grid, model)` since it does not depend on the misalignment.
+
 8. **Units**: SI inside both backend packages; the JSON API uses the *display* units named in
    every field (`_um`, `_us`, `_MHz`, `_mm`, `_nm`, `_mrad`, `_ns`) and nothing else. The
    frontend converts to SI for the physics module (`physics/units.ts`).
@@ -139,10 +212,11 @@ generated code shows how).
 ### 1.1 What is approximate in the movie, stated for users
 
 The basic movie is exact for spot *positions*, *best-focus Z*, *astigmatic interval* and
-*power* (all closed form, Table I), and approximate for the intensity *shape*: it ignores the
+*power* (all closed form, Table I; shadow tweezers appear as their own spots at the right
+places with the right power), and approximate for the intensity *shape*: it ignores the
 aperture fill edge (so the first `τ` looks like a dim Gaussian rather than a truncated one),
-acoustic irising, and interference inside a frequency group (shadow-tweezer pairs). The exact
-frame exists to show the difference. The advanced engine adds the fill edge, irising,
+acoustic irising, and interference between co-located degenerate terms (the simultaneous-fading
+Mach–Zehnder case). The exact frame exists to show the difference. The advanced engine adds the fill edge, irising,
 compression/IM3 (through the `J₁` law), misalignment, and efficiency roll-off.
 
 ### 1.2 Performance budget (measured on the dev container, `aodl` 0.1.0, numpy 2.5)
@@ -154,8 +228,13 @@ compression/IM3 (through the `J₁` law), misalignment, and efficiency roll-off.
 | exact XY frame 192 px | 2 ms | 0.13 s | 0.7 s |
 
 Rules: the backend caches `MotionPlan` and `SimResult` by request hash (LRU, ≥ 32 entries);
-`simulate` caps `n_frames` at 240; arrays above 64 traps default to `mixing_order=1` for the
-*movie metrics* unless the user opts in (the plan/report always use the requested order); the
+`simulate` caps `n_frames` at 240; the *movie metrics* fall back to `mixing_order=1` when the
+first frame at the requested order holds more than 160 frequency groups (a 3×3 at order 3
+already has 49 — 9 traps and 40 IM3 ghosts; a 10×10 has 483) unless the user opts in with
+`movie_mixing_order=3` (the plan/report always use the requested order); simulate responses
+are struct-of-arrays, rounded to 6 significant digits, with spots below `1e-3` of the frame's
+maximum power dropped (invisible at gamma 0.7); long routes (`/api/simulate`, `/api/frame`,
+`/api/advanced/*`) are plain `def` endpoints so FastAPI runs them in its threadpool; the
 frontend renders the movie at 60 fps from cached metrics with no network traffic during
 playback; exact frames are fetched only on demand.
 
@@ -269,25 +348,42 @@ AODL/
   reads `t` and redraws from cached data — no network during playback.
 * **RF panel**: per channel a canvas with tone frequency tracks `f_center + f_n(t)` [MHz] vs
   drive time, line opacity = envelope `A_n(t)` (hidden where `A = 0`), band edges dotted, the
-  shaded aperture window `[t − τ, t]`, a marker at `t − τ/2`; below it the summed envelope and,
-  optionally, the voltage zoom `V(t')` for `t' ∈ [t − 1 µs, t + 1 µs]` evaluated from the IR
-  (carrier included). Keep ≤ 2000 samples per track; recompute tracks only when the plan changes.
-* **Aperture panel**: four small canvases, `V(u)` for `u ∈ [−D/2, D/2]` at the cursor time via
-  `t_ret(u) = t − τ/2 − s u / v`, zero where unfilled, transducer side labelled, beam
-  (`±w_in`) shaded. This is the "acoustic delay region visible on the AOD surface".
+  shaded aperture window `[t − τ, t]` (clipped at 0 while `t < τ`), a marker at `t − τ/2`;
+  below it the summed envelope and, optionally, the voltage zoom `V(t')` for
+  `t' ∈ [t − 0.2 µs, t + 0.2 µs]` on 2001 points (50 samples per 10 ns carrier period) evaluated
+  from the IR (carrier included). Keep ≤ 2000 samples per track; recompute tracks only when the
+  plan changes.
+* **Aperture panel**: four small canvases, the acoustic content on the crystal for
+  `u ∈ [−D/2, D/2]` at the cursor time via `t_ret(u) = t − τ/2 − s u / v`: the **envelope**
+  `Σ_n A_n(t_ret(u))` as a filled curve coloured by the local instantaneous frequency
+  `f_c + Σ A_n f_n / Σ A_n` (the carrier itself — 1150 cycles across 7.5 mm — cannot be drawn
+  honestly on a 200 px canvas and is aliased at 512 samples; a zoom toggle draws the literal
+  `V(u)` over a 100 µm window at ≥ 4096 samples), zero and greyed where unfilled, transducer
+  side labelled, beam (`±w_in`) shaded. This is the "acoustic delay region visible on the AOD
+  surface".
 * **Tweezer view**: XY canvas (tracked or fixed plane; hue = z), XZ canvas through the brightest
   row, isometric 3D canvas drawing each trap's 1/e² caustic as stacked ellipses over `±2 z_R`
   plus the requested path as a trail; shared colour bar. "Exact frame" fetches `/api/frame` and
   shows it beside the approximation with the same colour scale.
-* **Metrics**: requested vs simulated `X, Y, Z` (the simulated curve lags by `τ/2`), per-trap
-  power (normalised to the plateau), `σ_astig`, `w_x, w_y` — all vs time with the cursor.
-* **Code panel**: generated Python with copy + "download .npz" + "download .py".
+* **Metrics**: requested vs simulated `X, Y, Z` (the simulated curve lags by `τ/2`; a dashed
+  "expected at the atoms" copy of the request shifted by `+τ/2` is drawn unless
+  `retard_compensate` is on), per-trap power (normalised to `power_ref`), `σ_astig`,
+  `w_x, w_y` — all vs time with the cursor. Shadow tweezers that fall outside the canvas are
+  announced by a badge driven by `fade_events`.
+* **Code panel**: generated Python (with the *resolved* synthesis options — `ShepardConfig`,
+  phases, seeded `rng` — and a comment block listing the fade schedule and shadow offsets) with
+  copy + "download .npz" + "download .py", and a "waveform recipe" tab tabulating every tone
+  from the IR (channel, rung, frequency range, segment count, envelope kind and parameters,
+  `phase0`) — the fade-in/fade-out design made explicit.
 * **Advanced page**: efficiency panel (single AOD η vs f and vs deflection angle with the band
-  marked; pair heat map `η(f_A, f_B)`; efficiency along the current trajectory and predicted
-  trap-power ripple), misalignment panel (per-AOD sliders; run button; XY/XZ exact frames from
+  marked and `first_aod_usable_MHz` called out; pair heat map `η(f_A, f_B)` with the ridge and
+  the usable rectangle; efficiency along the current trajectory and predicted trap-power
+  ripple), misalignment panel (per-AOD sliders; run button; XY/XZ exact frames from
   the FFT engine beside the aligned reference; metrics table: centroid shift in `w0`, waists,
   `Z_x`, `Z_y`, Strehl), spectrum panel (PSD per channel of the rendered samples around the
-  cursor, crest factor). Every advanced plot states its model assumptions in one line.
+  cursor, crest factor — *if time permits*). Every advanced plot states its model assumptions
+  in one line. Priority order if the schedule bites: efficiency → misalignment → spectrum;
+  helix generator and advanced XZ focus fits are also optional.
 
 ## 5. Testing and CI
 
@@ -302,9 +398,10 @@ AODL/
 * CI: `.github/workflows/webapp.yml` (W4) running both suites; the root CI is untouched except
   that the `Path` tests live under `tests/` and run with it.
 * Verification (W4): start both servers, drive the UI with Playwright (pre-installed Chromium),
-  capture screenshots into `webapp/docs/screenshots/`, and check that (a) the XY approximation
-  and the exact frame agree on spot centroids to 0.05 w0 for the pick-and-place example at
-  `t = 2τ`, (b) the aperture panel's `V(u)` matches `/api/aperture` to 1e-6, (c) no console
+  capture one screenshot per page into `webapp/docs/screenshots/`, and check that (a) the XY
+  approximation and the exact frame agree on spot centroids to 0.05 w0 for the pick-and-place
+  example at `t = 70 µs + τ/2` (mid-translate: `X ≈ 10 µm`, tracked plane `≈ 5 µm`, so both
+  centroid and plane are exercised — at `t = 2τ` the check would be trivial), (b) the aperture panel's `V(u)` matches `/api/aperture` to 1e-6, (c) no console
   errors.
 
 ## 6. Orchestration

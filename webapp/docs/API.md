@@ -29,8 +29,11 @@ caches by `plan_id`.
 ### 0.3 Packed arrays (`b64u16`)
 A 2-D intensity image is `{"shape": [ny, nx], "peak": <float>, "data": "<base64>"}` where `data`
 is little-endian `uint16`, row-major (`y` outer, `x` inner, `imshow` convention: row 0 = `y0`),
-and `value = peak * code / 65535`. `peak` is in the engine's own (prefactor-dropped) intensity
-units; only ratios between images returned from the same call are meaningful.
+and `value = peak * code / 65535`. For the basic-mode routes (§5) `peak` is on the
+`SpotMetrics.power` scale of `aodl.field.focal.intensity_frame` (an unwindowed spot's peak is
+`2·power/(π·wx·wy)`), so the Gaussian approximation and an exact frame are directly
+comparable; for the advanced engine (§6) `peak` is in that engine's own prefactor-dropped
+units and only ratios between images from the same call are meaningful.
 
 ### 0.4 Channel order
 Always `["Ax", "Bx", "Ay", "By"]` (`aodl.params.CHANNELS`). Objects keyed by channel use these
@@ -83,15 +86,21 @@ where the path starts (DESIGN §1.3). Durations positive.
 ### 3.4 `PlanOptions`
 ```json
 {"shepard": "auto", "shepard_delta_f_MHz": null, "eta": 0.5,
- "phases": "schroeder", "amp": 1.0, "retard_compensate": false,
+ "phases": "schroeder", "phase_seed": 0, "amp": 1.0, "retard_compensate": false,
  "f_z_bias": "none", "t_pad_us": null, "check_band": true}
 ```
 `shepard ∈ {"auto", "never", "always"}` → `plan_motion(shepard="auto" | None | ShepardConfig)`;
 `shepard_delta_f_MHz` (`[dfx, dfy]`) is required when `"always"` (for an array axis it must
 equal the array spacing — `aodl` enforces it) and ignored otherwise; `eta ∈ (0, 0.5]`;
 `phases ∈ {"schroeder", "zero", "random"}`; `f_z_bias ∈ {"none", "auto"}` → `0.0 | "auto"`;
-`t_pad_us: null` = `aodl` default (2τ). `check_band=false` is allowed for plotting infeasible
-drives (the report carries the `aodl` note).
+`phases="random"` draws from `numpy.random.default_rng(phase_seed)` so the plan, its id and the
+generated code are reproducible; `t_pad_us: null` = `aodl` default (2τ) — `t_pad_us = 0` means
+the array's final rest position is never observable (the simulate grid is clamped to
+`t_span[1] − τ/2`), which the plan `notes` must say; `check_band=false` is allowed for plotting
+infeasible drives (the report carries the `aodl` note). `amp ≠ 1` on a drive that ends up in
+`"shepard"` mode is a valid plan but cannot be serialised (`FadeZoneEnvelope.amp ≠ 1` has no
+schema slot), so the NPZ download answers 400 `unsupported`; the frontend greys the `amp`
+field out when the current plan's `mode == "shepard"`.
 
 ### 3.5 `PlanRequest`
 `{"hardware": HardwareSpec, "array": ArraySpec, "moves": [MoveSpec, ...], "options": PlanOptions}`
@@ -112,7 +121,8 @@ drives (the report carries the `aodl` note).
   "notes": ["...", ...],
   "constants": {"tau_us": 11.54, "half_tau_us": 5.77, "waist0_um": 1.0655, "rayleigh_um": 3.463,
                 "um_per_MHz": 10.3, "lens_scale_m_s": 1.03e-16, "chirp_per_um_MHz_per_ms": 4.854,
-                "beam_transit_us": 3.077, "eq1_hold_10um_us": 206.0},
+                "beam_transit_us": 6.154, "eq1_hold_10um_us": 206.0},
+  // beam_transit_us = 2 w_in / v (PLAN §1.5's startup-transient time), not w_in / v
   "t_span_us": [0.0, 163.08],                // programmed drive span incl. hold tail
   "duration_us": 140.0,                      // trajectory duration T
   "seams_us": [0.0, 40.0, 100.0, 140.0],     // move boundaries
@@ -163,20 +173,30 @@ phase `= phase(t) + phase0`; voltage `V(t) = Σ A_n(t) cos(2π f_center t + phas
 ```
 Defaults: `t_start_us = 0`, `t_end_us = duration + τ` (never beyond `t_span[1] − τ/2`, which the
 server clamps to), `n_frames ∈ [2, 240]`. `movie_mixing_order` (`1 | 3 | null`) overrides the
-hardware order for the metrics only (DESIGN §1.2); when `null` and the array has > 64 traps the
-server uses 1 and says so in `notes`.
+hardware order for the metrics only (DESIGN §1.2); when `null` and the first frame at the
+requested order holds more than 160 frequency groups the server uses 1 and says so in `notes`.
 ```json
 {
   "plan_id": "...", "times_us": [...], "tracked_z_um": [...],
-  "frames": [[Spot, ...], ...],          // frames[i] = groups of frame i (may be [] before τ/2)
+  "frames": [SpotFrame, ...],            // frames[i]: struct-of-arrays, all lists equal length
+                                         // (length 0 before τ/2); one entry per *spatial cluster*
+                                         // of a frequency group (DESIGN §1 item 2)
   "constants": {"waist0_um": ..., "rayleigh_um": ..., "tau_us": ...},
-  "bounds_um": {"x0": -3.0, "x1": 25.0, "y0": -8.0, "y1": 8.0, "z0": -2.0, "z1": 8.0},  // spots ± 6 w0 / 1 z_R
-  "power_ref": 6.59e-29,                  // median spot power over frames where > 0 (for normalising)
+  "bounds_um": {"x0": -3.0, "x1": 25.0, "y0": -8.0, "y1": 8.0, "z0": -2.0, "z1": 8.0},
+                // requested trajectory ± array half-extent ± 6 w0 laterally, ± 1 z_R axially
+                // (NOT the spot table: shadow tweezers at ±10.3·Δf µm would blow the canvas up)
+  "power_ref": 6.59e-29,                  // median spot power over all frames (for normalising)
   "notes": ["..."]
 }
-Spot = {"x_um", "y_um", "z_um", "delta_f_um", "sigma_astig", "wx_um", "wy_um",
-        "power", "power_coherent", "df_opt_MHz"}
+SpotFrame = {"x_um": [...], "y_um": [...], "z_um": [...], "delta_f_um": [...], "sigma_astig": [...],
+             "wx_um": [...], "wy_um": [...], "power": [...], "power_coherent": [...],
+             "df_opt_MHz": [...], "group": [int...], "n_terms": [int...]}
+Spot      = the same twelve fields as scalars (used by /api/frame and /api/advanced)
 ```
+Floats are rounded to 6 significant digits; spots below `1e-3` of the frame's maximum power
+are dropped (both rules exist to keep an 80-frame 4×4 fading response under ~1 MB).
+`group` is the frequency-group index of `aodl.field.focal.group_terms` for that frame,
+`n_terms` the number of pupil terms in the cluster.
 
 ### 5.2 `POST /api/frame` (`FrameRequest`) → `FrameResponse`
 ```json
@@ -196,13 +216,21 @@ Spot = {"x_um", "y_um", "z_um", "delta_f_um", "sigma_astig", "wx_um", "wy_um",
 `coverage`). Cuts go through the brightest spot of the frame.
 
 ### 5.3 `POST /api/aperture` (`ApertureRequest`) → `ApertureResponse`
-`{"plan": PlanRequest, "time_us": 30.0, "n": 512}` →
-`{"time_us": 30.0, "channels": {"Ax": {"u_mm": [...n], "v": [...n], "filled": [bool...n], "t_ret_us": [...n]}, ...}}`
-— `aodl.device.aod.aperture_window` verbatim (carrier included, zero where unfilled), plus
-the fill mask and retarded time so the frontend can be tested against it.
+`{"plan": PlanRequest, "time_us": 30.0, "n": 512, "include_voltage": false, "voltage_window_mm": null}` →
+```json
+{"time_us": 30.0, "channels": {"Ax": {"u_mm": [...n], "envelope": [...n], "f_inst_MHz": [...n],
+ "filled": [bool...n], "t_ret_us": [...n], "voltage": {"u_mm": [...m], "v": [...m]} | null}, ...}}
+```
+`envelope = Σ_n A_n(t_ret(u))` and `f_inst_MHz = f_center + Σ A_n f_n / Σ A_n` (NaN where the
+envelope is 0), both zero/NaN where unfilled, with `t_ret(u) = t − τ/2 − s u / v`. The literal
+carrier-included `V(u)` of `aodl.device.aod.aperture_window` cannot be drawn at `n = 512`
+(Δu = 14.7 µm against an acoustic wavelength of 6.5 µm → aliased moiré), so it is returned only
+when `include_voltage=true`, on `m ≥ 4096` points over `voltage_window_mm = [u0, u1]` (default
+the central 0.1 mm).
 
-### 5.4 `GET /api/plan/{plan_id}/waveform.npz` → the parametric NPZ (`WaveformSet.save`) as
-`application/octet-stream`, filename `aodl_<plan_id>.npz`; 404 `plan_not_cached` if evicted.
+### 5.4 `GET /api/plan/{plan_id}/waveform.npz` → the parametric NPZ (`WaveformSet.save`, via a
+temporary file) as `application/octet-stream`, filename `aodl_<plan_id>.npz`; 404
+`plan_not_cached` if evicted; 400 `unsupported` for a Shepard drive with `amp ≠ 1` (§3.4).
 
 ### 5.5 `POST /api/code` (`PlanRequest`) → `{"code_python": "..."}` (same as in the plan
 response; exists so the code panel can refresh without re-planning).
@@ -212,22 +240,28 @@ response; exists so the code panel can refresh without re-planning).
 ### 6.1 `EfficiencyModel`
 ```json
 {"interaction_length_mm": 4.0, "f_tpm_MHz": null, "refractive_index": 2.26,
- "peak_efficiency": 0.85, "angular_coupling": 1.0}
+ "peak_efficiency": 0.85, "angular_coupling": 0.2}
 ```
 `f_tpm_MHz: null` → the hardware `f_center`. `peak_efficiency ∈ (0, 1]` → `Γ = asin(√η_peak)`.
-`angular_coupling ∈ [−1, 1]` (DESIGN §1.6).
+`angular_coupling γ ∈ [−1, 1]`: the signed fraction of the first AOD's deflection that reaches
+the second AOD's Bragg plane (DESIGN §1.6; `|γ| = 1` ideal relay, default 0.2 reproduces the
+paper's "a few times narrower" first-AOD band at `L = 4 mm`). The second-AOD mismatch is
+`δ_B = C₂[(f_B − f_tpm)² − 2 γ f_tpm (f_A − f_tpm)]`.
 
 ### 6.2 `POST /api/advanced/efficiency` → curves and the pair map
 Request `{"hardware": HardwareSpec, "model": EfficiencyModel, "f_range_MHz": null, "n": 241}`
 (`f_range` default `f_center ± 1.5 × half band`).
 ```json
 {"f_MHz": [...n], "deflection_mrad": [...n], "eta_first": [...n],
- "eta_second_at_center": [...n],              // η_B(f_B; f_A = f_center)
- "bandwidth_3dB_MHz": 29.1, "band_MHz": [90, 110], "f_tpm_MHz": 100.0,
+ "eta_second_at_center": [...n],              // η_B(f_B; f_A = f_tpm) — equals eta_first when f_tpm = f_center
+ "bandwidth_3dB_MHz": 27.9, "first_aod_usable_MHz": 10.4, "band_MHz": [90, 110], "f_tpm_MHz": 100.0,
  "pair": {"f_A_MHz": [...m], "f_B_MHz": [...m], "eta": [[...m]...m]},   // m = 121, row = f_A
- "ridge": {"f_A_MHz": [...], "eta_max": [...], "f_B_at_max_MHz": [...]},
+ "ridge": {"f_A_MHz": [...], "eta_max": [...], "f_B_at_max_MHz": [...]},  // max over f_B within the band, per f_A
  "assumptions": "..." }
 ```
+
+`first_aod_usable_MHz` is the full width in `f_A` over which `ridge.eta_max ≥ ½·max(ridge.eta_max)`
+with `f_B` restricted to the hardware band (DESIGN §1.6).
 
 ### 6.3 `POST /api/advanced/trajectory_efficiency` `{"plan": PlanRequest, "model": EfficiencyModel, "n": 300}` →
 `{"t_us": [...], "per_channel": {"Ax": [...], ...}, "product": [...], "min_product": 0.73, "assumptions": "..."}`
@@ -244,25 +278,32 @@ All default to the aligned device; any channel may be omitted.
 ```json
 {"plan": PlanRequest, "misalignment": Misalignment, "times_us": [20.0, 40.0],
  "grid": {"half_x_um": 6.0, "half_y_um": 6.0, "n": 96, "center": "tracked" | {"x_um":..,"y_um":..}},
- "xz": {"nz": 64, "z_half_um": 8.0} | null,
- "model": {"pupil_n": 256, "span_w_in": 2.5, "order_model": "j1" | "weak", "beat_subtimes": 8,
-           "efficiency": EfficiencyModel | null},
+ "xz": {"nz": 24, "z_half_um": 8.0} | null,
+ "model": {"pupil_n": 256, "span_w_in": 2.5, "order_model": "j1" | "weak", "comb_dft_points": 16,
+           "max_groups": 128, "efficiency": EfficiencyModel | null},
  "reference": true}
 ```
-`len(times_us) ≤ 24`, `n ≤ 192`, `pupil_n ∈ {128, 256, 512}`.
+`len(times_us) ≤ 24`, `n ≤ 192`, `pupil_n ∈ {128, 256, 512}`, `xz.nz ≤ 32`,
+`comb_dft_points ∈ [1, 64]` (`K` of DESIGN §1.7; `1` = frozen instantaneous pupil, no line
+decomposition), `max_groups ≤ 256`. `center: "tracked"` centres the grid on the
+power-weighted mean of the frame's spots (from `aodl_webapp.simulation.frame_spots`) and the
+plane on its tracked Z.
 ```json
 {"plan_id": "...",
- "frames": [{"time_us": 20.0, "plane_z_um": 1.2,
+ "frames": [{"time_us": 20.0, "plane_z_um": 1.2, "n_groups": 7, "groups_dropped": 0,
              "xy": {"x_um": [...], "y_um": [...], "image": b64u16},
              "xz": {"x_um": [...], "z_um": [...], "row_y_um": 0.0, "image": b64u16} | null,
              "metrics": AdvMetrics, "reference_metrics": AdvMetrics | null}, ...],
+ "static_offset_um": {"Ax": {"x": 0.0, "y": 0.0}, ...},   // dropped common carrier-tilt pointing offset per channel
  "notes": ["..."]}
 AdvMetrics = {"x_um", "y_um", "wx_um", "wy_um", "z_best_x_um", "z_best_y_um", "astig_um",
               "peak_rel", "power_rel", "strehl"}      // *_rel relative to the aligned reference at the same time
 ```
 `strehl` = peak / aligned peak (1.0 for the reference itself). Waists are second-moment radii
-(`2σ`) of the XY image; `z_best_*` from a parabolic fit of the on-axis `w_x(Z)`, `w_y(Z)` minima
-over the XZ/YZ scans (so `xz` may be requested with `nz ≥ 16` for them; otherwise `null`).
+(`2σ`) of the XY image; `z_best_*` from a parabolic refinement of the `w_x(Z)`, `w_y(Z)` minima
+over the XZ/YZ scans, computed only when `xz` is requested with `nz ≥ 16` (otherwise `null`,
+and `astig_um` with it). The XZ image and the focus scans cover only the brightest ≤ 6 groups
+(`notes` says so when groups were left out).
 
 ### 6.6 `POST /api/advanced/spectrum` `{"plan": PlanRequest, "channel": "Ax", "t_center_us": 50.0, "window_us": 20.0, "sample_rate_MSps": 625.0}` →
 `{"f_MHz": [...], "psd_dB": [...], "crest_factor": 1.9, "papr_dB": 5.6, "peak_depth_rad": 0.42, "band_MHz": [90,110], "notes": [...]}`
