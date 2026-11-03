@@ -116,7 +116,9 @@ field out when the current plan's `mode == "shepard"`.
   "summary_text": "<PlanReport.summary()>",
   "band_usage": {"Ax": {"f_min_MHz": 100.0, "f_max_MHz": 101.46, "margin_MHz": 8.54}, ...},
   "tone_counts": {"Ax": 1, "Bx": 1, "Ay": 1, "By": 1},
-  "z_budget": {"requested_m_s": 5e-10, "ceiling_m_s": 2.06e-9, "fraction": 0.243},   // ceiling null when infinite
+  "z_budget": {"requested_m_s": 5e-10, "ceiling_m_s": 2.06e-9, "fraction": 0.243},   // ceiling null when infinite (Shepard);
+                // fraction is always finite: requested over the *plain* Eq. 1 ceiling (doubled under f_z_bias),
+                // so under Shepard it reads how far past the budget the request went (2.9 = 290 %)
   "fade_events": [{"time_us": 123.4, "axis": "x", "shadow_um": 10.3}, ...],
   "notes": ["...", ...],
   "constants": {"tau_us": 11.54, "half_tau_us": 5.77, "waist0_um": 1.0655, "rayleigh_um": 3.463,
@@ -126,7 +128,7 @@ field out when the current plan's `mode == "shepard"`.
   "t_span_us": [0.0, 163.08],                // programmed drive span incl. hold tail
   "duration_us": 140.0,                      // trajectory duration T
   "seams_us": [0.0, 40.0, 100.0, 140.0],     // move boundaries
-  "trajectory": {"t_us": [...400...], "x_um": [...], "y_um": [...], "z_um": [...]},
+  "trajectory": {"t_us": [...400...], "x_um": [...], "y_um": [...], "z_um": [...], "seams_us": [...]},  // seams repeated here
   "waveform_ir": WaveformIR,
   "code_python": "<runnable script>"
 }
@@ -181,7 +183,7 @@ requested order holds more than 160 frequency groups the server uses 1 and says 
   "frames": [SpotFrame, ...],            // frames[i]: struct-of-arrays, all lists equal length
                                          // (length 0 before τ/2); one entry per *spatial cluster*
                                          // of a frequency group (DESIGN §1 item 2)
-  "constants": {"waist0_um": ..., "rayleigh_um": ..., "tau_us": ...},
+  "constants": PlanConstants,              // the full §4 block (a superset of waist0_um, rayleigh_um, tau_us)
   "bounds_um": {"x0": -3.0, "x1": 25.0, "y0": -8.0, "y1": 8.0, "z0": -2.0, "z1": 8.0},
                 // requested trajectory ± array half-extent ± 6 w0 laterally, ± 1 z_R axially
                 // (NOT the spot table: shadow tweezers at ±10.3·Δf µm would blow the canvas up)
@@ -196,7 +198,15 @@ Spot      = the same twelve fields as scalars (used by /api/frame and /api/advan
 Floats are rounded to 6 significant digits; spots below `1e-3` of the frame's maximum power
 are dropped (both rules exist to keep an 80-frame 4×4 fading response under ~1 MB).
 `group` is the frequency-group index of `aodl.field.focal.group_terms` for that frame,
-`n_terms` the number of pupil terms in the cluster.
+`n_terms` the number of pupil terms in the cluster. Spots of *different* groups may coincide
+and must be added in intensity by the client: at a fading hand-over centre the main trap is
+**two** coincident spots (the dying `(a, a)` and rising `(a−1, a−1)` rung pairs, `2Δf` apart
+in optical frequency) whose powers sum to the trap's, beside the two shadows at `±10.3·Δf µm`
+(one group, two clusters) — four spots in all. `notes` also says when frames before `τ/2`
+are included (they are empty: the pair-driven tweezer is dark) and when `t_end_us` was
+clamped. The first `fade_events` entry of a lifted single tweezer is a *y* event at
+`t = 0` (`ξ_y = ½` puts a y fade centre exactly where `f_Z = 0`); pick the first `x` event to
+look at an x hand-over.
 
 ### 5.2 `POST /api/frame` (`FrameRequest`) → `FrameResponse`
 ```json
@@ -213,7 +223,15 @@ are dropped (both rules exist to keep an 80-frame 4×4 fading response under ~1 
  "spots": [Spot, ...]}
 ```
 `nx, ny, nz ≤ 512`. `time_us` must satisfy `aodl.simulate`'s coverage rule (else 400
-`coverage`). Cuts go through the brightest spot of the frame.
+`coverage`). The XZ slice reuses the XY grid's `x` range on `nx` points; its `z_um` axis is
+`plane_z_um ± z_half_um` on `nz` points (centred on the evaluation plane), and `row_y_um:
+null` snaps to the tweezer row nearest the power-weighted centre (`SimResult.spot_row`).
+Cuts go through the brightest spot of the frame: `i_x` is the XY image row nearest its `y`,
+`i_z` an exact axial cut at its `(x, y)` over `cuts.z_um` (the XZ `z` axis when `xz` is
+requested, else `plane_z_um ± 8 µm` on 96 points). `movie_mixing_order` is resolved exactly
+as in §5.1, so the exact frame shows the same spot set as the movie (`null` → the hardware
+order unless the > 160-group fallback applies). `spots` are the §5.1 clusters of this frame,
+unrounded and uncut.
 
 ### 5.3 `POST /api/aperture` (`ApertureRequest`) → `ApertureResponse`
 `{"plan": PlanRequest, "time_us": 30.0, "n": 512, "include_voltage": false, "voltage_window_mm": null}` →
@@ -226,7 +244,10 @@ envelope is 0), both zero/NaN where unfilled, with `t_ret(u) = t − τ/2 − s 
 carrier-included `V(u)` of `aodl.device.aod.aperture_window` cannot be drawn at `n = 512`
 (Δu = 14.7 µm against an acoustic wavelength of 6.5 µm → aliased moiré), so it is returned only
 when `include_voltage=true`, on `m ≥ 4096` points over `voltage_window_mm = [u0, u1]` (default
-the central 0.1 mm).
+the central 0.1 mm; `m = max(4096, 32 samples per acoustic wavelength v/f_center)`, capped at
+32768). Asking for the full aperture (`[−D/2, D/2]`) returns `aperture_window` point for
+point. **JSON has no NaN**: `f_inst_MHz` entries where the envelope is zero are `null`
+(pydantic's serialisation of NaN), and the frontend maps `null` back to `NaN`.
 
 ### 5.4 `GET /api/plan/{plan_id}/waveform.npz` → the parametric NPZ (`WaveformSet.save`, via a
 temporary file) as `application/octet-stream`, filename `aodl_<plan_id>.npz`; 404

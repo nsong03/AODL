@@ -1,0 +1,8 @@
+# Ruff settings for everything under webapp/ that has no closer config (the scripts); the
+# backend package carries its own pyproject.toml with the same rules.  Extends the root so the
+# rule set stays identical, and declares the three in-repo packages first-party so import
+# blocks sort the same way in every directory.
+extend = "../pyproject.toml"
+
+[lint.isort]
+known-first-party = ["aodl", "aodl_webapp", "aodl_advanced"]
