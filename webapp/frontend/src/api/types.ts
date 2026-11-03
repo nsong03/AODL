@@ -340,7 +340,7 @@ export interface ImageXZ {
 /**
  * API.md §5.2 — closed-form (Eq. S11) line cuts through the frame's brightest spot, on the
  * packed-image scale (SI `intensity_frame`, per m²). `i_x` is the XY row nearest `through.y`,
- * `i_y` the XY column nearest `through.x` (on `y_um`, else on `xy.y_um`), `i_z` an exact axial
+ * `i_y` the XY column nearest `through.x` (over `xy.y_um`; `y_um` only if a backend sends it), `i_z` an exact axial
  * cut at `through` over `z_um`. `i_y` / `y_um` arrived in round 2: an older backend omits them.
  */
 export interface Cuts {
