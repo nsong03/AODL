@@ -373,6 +373,46 @@ def trajectory_bounds(plan: MotionPlan) -> Bounds:
     )
 
 
+def brightest_trap_power(frame: SpotFrame, waist0_um: float) -> float:
+    """Power of the brightest *trap* in a frame: spots within one waist of each other are the
+    same trap and add.
+
+    A fading-Shepard hand-over splits the main trap into two coincident frequency groups of
+    half power each (DESIGN §1 item 2), so a per-spot statistic would read the trap at ½ there
+    while the Eq. S31 shadows read ½ too; merging coincident spots first restores the trap's
+    unit power at every instant, which is what a normalisation reference has to measure.
+    """
+    power = np.asarray(frame.power, dtype=np.float64)
+    if power.size == 0:
+        return 0.0
+    x = np.asarray(frame.x_um, dtype=np.float64)
+    y = np.asarray(frame.y_um, dtype=np.float64)
+    order = np.argsort(-power)
+    centres: list[tuple[float, float]] = []
+    sums: list[float] = []
+    for i in order:
+        for k, (cx, cy) in enumerate(centres):
+            if math.hypot(x[i] - cx, y[i] - cy) <= waist0_um:
+                sums[k] += float(power[i])
+                break
+        else:
+            centres.append((float(x[i]), float(y[i])))
+            sums.append(float(power[i]))
+    return max(sums)
+
+
+def reference_power(frames: list[SpotFrame], waist0_um: float) -> float:
+    """``power_ref`` of API.md §5.1: the median over lit frames of the brightest trap's power.
+
+    Robust to the fill transient (dark frames are skipped), to hand-overs (coincident groups
+    are merged by :func:`brightest_trap_power`) and to shadow tweezers (never the brightest).
+    A single tweezer or any array therefore reads ``power / power_ref ≈ 1`` on its plateau.
+    """
+    values = [brightest_trap_power(f, waist0_um) for f in frames]
+    lit = np.asarray([v for v in values if v > 0.0], dtype=np.float64)
+    return float(np.median(lit)) if lit.size else 0.0
+
+
 def simulate_response(req: SimulateRequest) -> SimulateResponse:
     """API.md §5.1."""
     plan = get_plan(req.plan)
@@ -387,12 +427,7 @@ def simulate_response(req: SimulateRequest) -> SimulateResponse:
             f"needs both counter-propagating wavefronts to reach the beam (docs/conventions.md §7)."
         )
     frames = [frame_model(rows) for rows in sim.clusters]
-    powers = (
-        np.concatenate([np.asarray(f.power, dtype=np.float64) for f in frames])
-        if frames
-        else np.zeros(0)
-    )
-    power_ref = float(np.median(powers)) if powers.size else 0.0
+    power_ref = reference_power(frames, plan.params.optics.waist0 / um)
     return SimulateResponse(
         plan_id=plan_id(req.plan),
         times_us=(times / us).tolist(),

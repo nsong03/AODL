@@ -69,6 +69,6 @@ build:
 fixtures:
 	$(PYTHON) $(ROOT)/webapp/scripts/gen_frontend_fixtures.py
 
-serve:
+serve: build
 	@echo "AODL Studio: http://localhost:$(BACKEND_PORT) (API under /api; frontend from frontend/dist)"
 	cd $(BACKEND) && $(PYTHON) -m uvicorn aodl_webapp.main:create_app --factory --port $(BACKEND_PORT)

@@ -51,6 +51,29 @@ def test_frame_count_defaults_and_struct_of_arrays(client, pick_and_place):
     assert body["power_ref"] > 0.0
 
 
+def test_power_ref_is_the_plateau_trap_power(client, pick_and_place, single_lift_hold):
+    """``power_ref`` normalises a trap to 1: on an Eq. S19 drive it equals the lone spot's
+    plateau power, and on a fading drive the two coincident half-power groups of a hand-over
+    merge back to ~1 while the Eq. S31 shadows read ~0.5 (API.md §5.1)."""
+    body = _simulate(client, pick_and_place, n_frames=40)
+    tau = body["constants"]["tau_us"]
+    late = [f for t, f in zip(body["times_us"], body["frames"]) if t > 2 * tau and f["power"]]
+    plateau = np.median([max(f["power"]) for f in late])
+    assert body["power_ref"] == pytest.approx(plateau, rel=0.02)
+
+    plan = client.post("/api/plan", json=as_json(single_lift_hold)).json()
+    event = next(e for e in plan["fade_events"] if e["axis"] == "x")
+    t = event["time_us"] + 0.5 * plan["constants"]["tau_us"]
+    body = _simulate(client, single_lift_hold, n_frames=2, t_start_us=t, t_end_us=t + 1e-3)
+    frame = body["frames"][0]
+    x = np.asarray(frame["x_um"])
+    power = np.asarray(frame["power"]) / body["power_ref"]
+    main = np.abs(x) < 0.05
+    assert main.sum() == 2  # the two coincident main-trap groups
+    assert power[main].sum() == pytest.approx(1.0, abs=0.06)
+    assert np.all(np.abs(power[~main] - 0.5) < 0.06)
+
+
 def test_frames_before_half_tau_are_empty(client, pick_and_place):
     body = _simulate(client, pick_and_place, n_frames=40, t_start_us=0.0, t_end_us=2.0 * TAU_US)
     for t, frame in zip(body["times_us"], body["frames"], strict=True):

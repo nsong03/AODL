@@ -32,8 +32,12 @@ is little-endian `uint16`, row-major (`y` outer, `x` inner, `imshow` convention:
 and `value = peak * code / 65535`. For the basic-mode routes (§5) `peak` is on the
 `SpotMetrics.power` scale of `aodl.field.focal.intensity_frame` (an unwindowed spot's peak is
 `2·power/(π·wx·wy)`), so the Gaussian approximation and an exact frame are directly
-comparable; for the advanced engine (§6) `peak` is in that engine's own prefactor-dropped
-units and only ratios between images from the same call are meaningful.
+comparable. **The unit is SI: power per m²** (`wx`, `wy` in metres), so a client that evaluates
+`2·power/(π·wx·wy)` with the spot radii in µm (the `_um` fields) must multiply the decoded image
+by `1e-12` (µm²/m²) before comparing — the frontend's `PER_M2_TO_PER_UM2`. For the advanced
+engine (§6) `peak` is in that engine's own prefactor-dropped units (in practice the same
+`intensity_frame` scale to 1e-3, see `reports/W2.md` §5.8) and only ratios between images from
+the same call are guaranteed meaningful.
 
 ### 0.4 Channel order
 Always `["Ax", "Bx", "Ay", "By"]` (`aodl.params.CHANNELS`). Objects keyed by channel use these
@@ -187,7 +191,9 @@ requested order holds more than 160 frequency groups the server uses 1 and says 
   "bounds_um": {"x0": -3.0, "x1": 25.0, "y0": -8.0, "y1": 8.0, "z0": -2.0, "z1": 8.0},
                 // requested trajectory ± array half-extent ± 6 w0 laterally, ± 1 z_R axially
                 // (NOT the spot table: shadow tweezers at ±10.3·Δf µm would blow the canvas up)
-  "power_ref": 6.59e-29,                  // median spot power over all frames (for normalising)
+  "power_ref": 6.59e-29,                  // median over lit frames of the brightest trap's power, spots
+                                          // within one w0 merged first (so a trap reads 1.0 on its plateau
+                                          // and through a hand-over; shadows read 0.5)
   "notes": ["..."]
 }
 SpotFrame = {"x_um": [...], "y_um": [...], "z_um": [...], "delta_f_um": [...], "sigma_astig": [...],
@@ -275,7 +281,7 @@ Request `{"hardware": HardwareSpec, "model": EfficiencyModel, "f_range_MHz": nul
 ```json
 {"f_MHz": [...n], "deflection_mrad": [...n], "eta_first": [...n],
  "eta_second_at_center": [...n],              // η_B(f_B; f_A = f_tpm) — equals eta_first when f_tpm = f_center
- "bandwidth_3dB_MHz": 27.9, "first_aod_usable_MHz": 10.4, "band_MHz": [90, 110], "f_tpm_MHz": 100.0,
+ "bandwidth_3dB_MHz": 27.9, "first_aod_usable_MHz": 12.05, "band_MHz": [90, 110], "f_tpm_MHz": 100.0,
  "pair": {"f_A_MHz": [...m], "f_B_MHz": [...m], "eta": [[...m]...m]},   // m = 121, row = f_A
  "ridge": {"f_A_MHz": [...], "eta_max": [...], "f_B_at_max_MHz": [...]},  // max over f_B within the band, per f_A
  "assumptions": "..." }

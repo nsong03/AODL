@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -45,6 +45,9 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
         candidate = (dist / full_path).resolve() if full_path else index
         if full_path and candidate.is_file() and dist.resolve() in candidate.parents:
             return FileResponse(candidate)
+        if full_path == "api" or full_path.startswith(("api/", "assets/")):
+            # an unknown API route or a missing bundle asset is a 404, never the SPA shell (W4)
+            raise HTTPException(status_code=404, detail=f"no such route or file: /{full_path}")
         return FileResponse(index)
 
 
