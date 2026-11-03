@@ -1,0 +1,85 @@
+/* AODL Studio · fading-Shepard tutorial (pages/Tutorial.tsx) */
+.tutorial {
+  width: 100%;
+  max-width: 1500px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+.tutorial .tut-intro p {
+  margin: 0 0 8px;
+  color: var(--text-dim);
+  font-size: 13px;
+  max-width: 1100px;
+}
+.tutorial .tut-pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  margin-top: 12px;
+}
+@media (max-width: 1000px) {
+  .tutorial .tut-pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.tutorial .tut-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  margin-top: 12px;
+}
+.tutorial .tut-col-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.tutorial .tut-legend {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.tutorial .tut-legend .sw {
+  display: inline-block;
+  width: 16px;
+  height: 2px;
+  vertical-align: middle;
+  margin-right: 4px;
+}
+.tutorial table.tut-numbers {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+.tutorial table.tut-numbers th,
+.tutorial table.tut-numbers td {
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.tutorial table.tut-numbers th {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+.tutorial table.tut-numbers td.num {
+  font-family: var(--mono, ui-monospace, monospace);
+}
+.tutorial .neg {
+  color: var(--danger);
+}
+.tutorial .pos {
+  color: var(--ok, #8ac926);
+}
+.tutorial ul.takeaways {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.tutorial ul.takeaways li {
+  margin-bottom: 6px;
+}

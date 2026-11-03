@@ -37,6 +37,7 @@ export default function App() {
           </NavLink>
           <NavLink to="/basic">Basic</NavLink>
           <NavLink to="/advanced">Advanced</NavLink>
+          <NavLink to="/tutorial/shepard">Tutorial</NavLink>
         </nav>
         <div className="status" title="backend /api/health">
           {health === null && 'backend: …'}

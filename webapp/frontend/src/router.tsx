@@ -1,8 +1,9 @@
-import { createBrowserRouter } from 'react-router-dom'
+import { Navigate, createBrowserRouter } from 'react-router-dom'
 import App from './App'
 import Advanced from './pages/Advanced'
 import Basic from './pages/Basic'
 import Landing from './pages/Landing'
+import Tutorial from './pages/Tutorial'
 
 export const router = createBrowserRouter(
   [
@@ -13,6 +14,8 @@ export const router = createBrowserRouter(
         { index: true, element: <Landing /> },
         { path: 'basic', element: <Basic /> },
         { path: 'advanced', element: <Advanced /> },
+        { path: 'tutorial', element: <Navigate to="/tutorial/shepard" replace /> },
+        { path: 'tutorial/shepard', element: <Tutorial /> },
       ],
     },
   ],
