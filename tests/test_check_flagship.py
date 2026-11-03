@@ -4,7 +4,7 @@ Two drives, both of them the product's own:
 
 * **the flagship** of ``docs/guide.md`` §2 — a 10x10 array lifted 10 µm, traversed 40 x 25 µm
   and lowered, which the band refuses as Eq. S19 and ``plan_motion`` therefore builds from the
-  fading-Shepard ladders of Eqs. S24-S28.  Ninety-three tones, thirty-four hand-overs, 100
+  fading-Shepard ladders of Eqs. S24-S28.  Ninety-four tones, thirty-four hand-overs, 100
   tweezers, checked at the seven deterministic frames of
   :meth:`aodl.api.MotionPlan.check_times`;
 * **the hurried Eq. S19 variant** — the same manoeuvre at the 25/30/25 µs the user story
@@ -14,10 +14,10 @@ The flagship's *position* gates run at the defaults; its waist and uniformity ga
 the reason is the drive rather than the checker.  A 30-rung ladder at ``drive_strength = 0.30``
 renders with a **normalization factor** (peak over single-tone amplitude) of 4.59, so the
 crystal's peak modulation index is 1.4 rad and the intermodulation of Eqs. S20-S22 spreads the
-per-trap intensity by about a fifth.  That spread is not purely ``C^2``: about **82 %** of it
-scales as ``C^2`` (``tests/test_check_bragg.py``) and the rest is a **~3.8 % C-independent
-floor** left by the fade-speed apodization, measured on this array down to
-``drive_strength = 0.003`` (``docs/guide.md`` §5.5).  The same fade-speed effect (``rho = 0.30``
+per-trap intensity by about a sixth (0.171 worst).  That spread is not purely ``C^2``: about
+**78 %** of it scales as ``C^2`` (``tests/test_check_bragg.py`` has the law) and the rest is a
+**~3.8 % C-independent floor** left by the fade-speed apodization, measured on this array down
+to ``drive_strength = 0.003`` (``docs/guide.md`` §5.5).  The same fade-speed effect (``rho = 0.30``
 for this array, §6.4) widens the spots by up to 8 % mid-hand-over.  Both are physics; the test
 pins them from *both* sides so that a regression in either direction is a failure.
 
@@ -117,7 +117,7 @@ def test_the_flagship_intensity_spread_is_the_crystals_own(flagship_report) -> N
     ``uniformity`` here is the Eqs. S20-S22 intermodulation of a 30-rung ladder whose tones
     stack to a modulation index of 1.4 rad, plus the C-independent fade-speed floor; ``waist``
     is the ``rho = 0.30`` fade-speed apodization of ``docs/guide.md`` §6.4.  Neither is a drive
-    error and neither is the checker — ~82 % of the spread scales with ``C^2`` and the rest
+    error and neither is the checker — ~78 % of the spread scales with ``C^2`` and the rest
     with the hand-over rate.
     """
     _, report = flagship_report
@@ -139,7 +139,7 @@ def test_the_flagship_lights_nothing_off_lattice(flagship_report) -> None:
     on_lattice = [blob for blob in report.blobs if blob.on_lattice]
     assert on_lattice  # the extended grid is lit
     brightest = max(blob.rel_intensity for blob in on_lattice)
-    assert 0.1 < brightest < report.tolerances.blob_fading  # measured 0.974, gate 1.2
+    assert 0.1 < brightest < report.tolerances.blob_fading  # measured 0.729, gate 1.2
     assert max(report.out_of_band.values()) < 1e-3  # switch_ramp is off, so this is not zero
     notes = " ".join(report.notes)
     assert "edge lines" in notes and "extended lattice is whitelisted up to" in notes
@@ -224,8 +224,10 @@ def test_the_unhurried_2x2_holds_the_default_tolerances(hurried_report) -> None:
 #: The ``Bx`` rung scaled down below.  The array ladder is a rectangle ten rungs wide that
 #: slides through thirty as the drive chirps, and this one is live over the first four of the
 #: seven check frames — the longest run any single rung gets, which is what gives the time
-#: median its best possible chance of seeing the fault.
-FAULTED_RUNG = 19
+#: median its best possible chance of seeing the fault.  (List index 20 since the even-M ``B``
+#: ladders carry Table II's half-rung ``xi_B``, which moved every window by half a rung; it was
+#: 19 under the WO-17 timing.)
+FAULTED_RUNG = 20
 
 #: Its amplitude.  ``0.80^2 = 0.64``, i.e. a 36 % intensity fault on every trap it feeds — the
 #: fault WO-23 found the opened 0.30 uniformity gate passing (finding F-2).
@@ -281,13 +283,13 @@ def test_a_shepard_rung_fault_does_not_hold_still(rung_fault_report, flagship_re
 
     * the **fault moves**.  The B ladder slides through the array — that is what Shepard means
       — so the faulted rung feeds column 0 at the first frame, column 1 at the second, column 4
-      at the third, and has left the band by the fifth.  Its −0.3 excursion therefore lands on
-      any one trap at *one* frame in seven, and a median over seven erases it exactly: the
-      corrupted drive's worst time median is the clean drive's to eight digits (all that
-      separates them is the 1e-9 the fault moves the render's global normalization by).
+      at the third, and has left the band by the fifth.  Its −0.24 excursion therefore lands on
+      any one trap at *one* frame in seven, and a median over seven erases it: the corrupted
+      drive's worst time median is the clean drive's to within 0.004, and below it rather
+      than above (0.098 against 0.102).
     * the **physics stays put**.  The Eqs. S20–S22 products land on lattice nodes carrying
       those nodes' own optical frequency, so they interfere permanently rather than beating
-      (``aodl.check.report._beat_comb``): the clean flagship's 0.137 median is a real, static
+      (``aodl.check.report._beat_comb``): the clean flagship's 0.102 median is a real, static
       IM3 pattern, not something a longer window or a median would remove.
 
     So there is no gate on this statistic that separates the two on this drive, at any value —
@@ -298,15 +300,17 @@ def test_a_shepard_rung_fault_does_not_hold_still(rung_fault_report, flagship_re
     _, clean = flagship_report
     _, faulted = rung_fault_report
 
-    # The per-frame gate sees the fault - as a 28 % dip at one frame, inside the opened gate.
-    assert faulted.worst()["uniformity"][0] == pytest.approx(0.28, abs=0.02)
+    # The per-frame gate sees the fault - as a 24 % dip at one frame, inside the opened gate.
+    assert faulted.worst()["uniformity"][0] == pytest.approx(0.24, abs=0.02)
     assert faulted.worst()["uniformity"][0] < faulted.tolerances.uniformity  # the F-2 hole
 
-    # The time median does not see it at all: identical to the clean drive's.
+    # The time median does not see it: no worse than the clean drive's, so no gate on it can
+    # pass the one and fail the other.
     clean_median = clean.median_uniformity()[0]
     fault_median = faulted.median_uniformity()[0]
-    assert clean_median == pytest.approx(0.137, abs=0.01)
-    assert fault_median == pytest.approx(clean_median, abs=1e-6)
+    assert clean_median == pytest.approx(0.102, abs=0.01)
+    assert fault_median == pytest.approx(clean_median, abs=0.01)
+    assert fault_median <= clean_median + 1e-9
 
     # ... because the fault visits a different column at each frame.  Take the rows it moved
     # by more than 10 % and ask which column they are in, frame by frame.
@@ -317,7 +321,7 @@ def test_a_shepard_rung_fault_does_not_hold_still(rung_fault_report, flagship_re
         int(frame): sorted({int(ix) for ix in table["ix"][moved & (table["frame"] == frame)]})
         for frame in (0, 1, 2)
     }
-    assert columns_hit == {0: [0], 1: [0, 1], 2: [4]}  # column 0 is an edge line, ungated
+    assert columns_hit == {0: [0], 1: [1], 2: [4]}  # column 0 is an edge line, ungated
 
     # No *gated* trap is disturbed at more than one of the seven frames, which is exactly why
     # every one of their medians survives the fault untouched.

@@ -121,7 +121,7 @@ report's `band_usage`, which quotes absolute RF so it compares directly against
 A waveform file holds **segment parameters, not samples** (`docs/PLAN.md` decision 5): per
 channel, one row per polynomial segment of each tone's frequency law, one row per tone for
 its phase and envelope, plus a JSON snapshot of the hardware it was designed for. The 550 µs,
-four-channel, 93-tone Shepard drive of the quickstart is 97 kB; the same drive sampled at
+four-channel, 94-tone Shepard drive of the quickstart is 98 kB; the same drive sampled at
 625 MS/s in float32 is 5.7 MB, and it only grows with duration and rate while the parametric
 file does not. The round trip is exact to float64, so what you export is what you simulated.
 
@@ -420,8 +420,8 @@ standing offset does not. On an Eq. S19 drive the second is the sharper instrume
 
 It is `None` by default because on a **fading-Shepard** drive it separates nothing. The ladder
 slides through the array, so a faulted rung feeds a different column at every frame: on the
-flagship, one rung at 80 % amplitude (a 36 % intensity fault) reads 0.28 at one frame and is
-erased by the median exactly — clean and corrupted both measure 0.137, which is the *static*
+flagship, one rung at 80 % amplitude (a 36 % intensity fault) reads 0.24 at one frame and is
+erased by the median — clean 0.102, corrupted 0.098, the clean value being the *static*
 Eqs. S20–S22 pattern rather than noise. That fault also passes the opened 0.30 per-frame gate,
 so it is currently uncaught, and `tests/test_check_flagship.py` carries it as a strict `xfail`
 rather than pretending otherwise.
@@ -462,10 +462,10 @@ rather than pretending otherwise.
 * **Not the crystal's own nonlinearity.** The default `bragg_band` model *includes* compression
   and intermodulation, so those show up as real residuals rather than as errors: a 10×10
   Shepard array at `drive_strength = 0.30` renders with a normalization factor (peak over
-  single-tone amplitude) of 4.59 and its per-trap intensity spreads by ~20 % from Eqs. S20–S22,
+  single-tone amplitude) of 4.59 and its per-trap intensity spreads by ~17 % from Eqs. S20–S22,
   with the spots widening up to 8 % mid-hand-over (`ρ = 0.30`, §6.4). Raise
   `uniformity`/`waist` for such a drive. Driving it more weakly removes only the Eqs. S20–S22
-  part, which is most of it but not all: ~82 % of the spread scales as `C²`, while the
+  part, which is most of it but not all: ~78 % of the spread scales as `C²`, while the
   fade-speed part does not depend on `C` at all and leaves a floor of ~3.8 % on the spread and
   the whole 8 % on the waist (measured on the flagship down to `drive_strength = 0.003`). Widen
   `Δf` — i.e. lower `ρ` — to move the floor.
@@ -524,18 +524,23 @@ hidden inside the code: the same list, drive-specific, comes back in `plan.repor
    with a switching period shorter than the aperture transit. `switch_ramp=<seconds>` replaces
    the step with a raised cosine, on **the rectangles only** — the `cos^p` `A` windows already
    reach zero smoothly, so ramping them bought no continuity and cost flatness. Scoped that way
-   a ramp leaves the interior of the array *exactly* where it was: the only column that moves is
-   the one the switching rung is arriving at (or leaving) — plus, on an **odd**-M ladder, whose
-   rungs switch in step with an `A` hand-over, the array's own two **edge** columns, which dip by
-   ~`(π|ġ|r/Δf)²/5` (**1.54 %** at `r = 3 µs` on a 1 MHz ladder holding 6 µm, 20 % at `r = τ`).
-   An **even**-M ladder switches mid-plateau, where the `A` ladder is not handing over, and pays
-   nothing at all. Such a drive does not round-trip through the NPZ (§5.1). The model also treats
+   a ramp leaves the interior of the array *exactly* where it was: the only columns that move
+   are the one the switching rung is arriving at (or leaving) and — because a rung switches in
+   step with an `A` hand-over, for odd and even M alike (§6.7) — the array's own two **edge**
+   columns, which dip by ~`(π|ġ|r/Δf)²/5` (**1.54 %** at `r = 3 µs` on a 1 MHz ladder holding
+   6 µm, 20 % at `r = τ`; measured identically on a 3- and a 4-column ladder). Such a drive
+   does not round-trip through the NPZ (§5.1). The model also treats
    the step as instantaneous *across the whole aperture* rather than travelling through it — a
    fidelity item, tracked in the backlog.
 
 7. **Extended grid, and pick-up scheduling.** A fading array is wider than the array you
-   asked for: **`M + 2` columns during a hand-over for odd M, `M + 1` at every instant for
-   even M**. Shadow tweezers sit at `± deflection_scale · Δf` and reach half a trap's power
+   asked for: **`M + 2` columns during a hand-over, `M` otherwise**, for odd and even M alike.
+   The two extra columns switch on at full depth while every requested column stays lit
+   (`cos² θ + sin² θ = 1`): for even M that needs the `B` ladder offset by half a rung against
+   the `A` one (`table_ii`'s `ξ_B = ξ_A + ½`), which is also what puts the array on Eq. S19's
+   half-integer lattice. (Before that offset an even-M array lit `M + 1` columns at every
+   instant — its requested block *walked* by a pitch through each hand-over, and an end column
+   went dark.) Shadow tweezers sit at `± deflection_scale · Δf` and reach half a trap's power
    mid-fade. `plan.report.fade_events` lists every hand-over with its axis and shadow offset —
    schedule pick-ups on the plateaus between them.
 
@@ -580,10 +585,12 @@ doubled ceiling that `f_z_bias="auto"` would buy. Three ways out, in order of co
 the hold; pass `f_z_bias="auto"` (§3.5); let `shepard="auto"` fall back to the ladders, which
 is what `plan_motion` does by default.
 
-**Why does my 10-column array show 11 columns during a fade?**
-Because a fading ladder always has a rung on the way in or out. For **even** M the extended
-grid is `M + 1` wide at every instant; for **odd** M two extra columns switch on together
-during a hand-over, giving `M + 2`. Those extra columns are real light at (for an array's
+**Why does my 10-column array show 12 columns during a fade?**
+Because a fading ladder has a rung on the way in and one on the way out. During a hand-over two
+extra columns switch on together, one on each side, giving `M + 2`; between hand-overs the grid
+is the `M` you asked for — odd or even M alike. (If you see `M + 1` at every instant, you are
+looking at a drive built before even-M `B` ladders were offset by half a rung, §6.7.) Those
+extra columns are real light at (for an array's
 `p_B = 0` ladder) full depth — treat them as traps you did not ask for, not as artefacts, and
 keep pick-ups off them via `plan.report.fade_events`.
 
@@ -648,9 +655,9 @@ the constants of `aodl.units`:
 | lateral gate `0.05 w₀` | 0.0533 µm | `0.05 * P.optics.waist0 / um` |
 | axial gate `0.05 z_R` | 0.1732 µm | `0.05 * P.optics.rayleigh / um` |
 
-Measured by the checker and quoted in §5.5: the flagship's ~20 % per-trap intensity spread and
-8 % waist swing at `drive_strength = 0.30`, its 0.137 time-median intensity pattern — the same
-clean or with a rung at 80 % — and its 64 % intensity-gate coverage
+Measured by the checker and quoted in §5.5: the flagship's ~17 % per-trap intensity spread and
+8 % waist swing at `drive_strength = 0.30` (3.8 % and 8 % at `drive_strength = 0.003`), its 0.102
+time-median intensity pattern — 0.098 with a rung at 80 % — and its 64 % intensity-gate coverage
 (`tests/test_check_flagship.py`); the 0 % coverage of a fading 2×2 and the 0.012 → 0.098
 time-median separation of a 5 % tone fault on the Eq. S19 3×3 (`tests/test_check_verdict.py`);
 the 0.07 w₀ departure from Table I on a 25/30/25 µs move, and the 1e-9 field agreement with the

@@ -135,7 +135,9 @@ channels (Eq. 1) — the synthesizer checks per-channel band limits (±10 MHz de
 per-channel configurable) and either raises a clear error with the max feasible move, or (milestone 4)
 switches to **fading-Shepard waveforms** (Eqs. S24–S28): tone ladders spaced Δf, cos^p fade
 envelopes with duty η, x/y fading zones interlaced (ξ offset ½), p_A = 1 / p_B = 0 for arrays
-so in-array intensity stays constant.
+so in-array intensity stays constant (and, for an even-M array axis, the B ladder offset half a
+rung from the A one, ξ_B = ξ_A + ½, so that both live A rungs of a hand-over see the same M + 1
+B rungs).
 
 ### 1.5 Default parameters (paper hardware, user-adjustable dataclasses)
 
@@ -253,10 +255,14 @@ Fig. 4 "L" trajectory for a 4×4 array; ✓ the user story: 10×10 array lift-tr
 Tone ladders, fade envelopes, interlaced x/y fading, Schroeder phases (S28).
 ✓ Sustained Z-offset beyond the single-chirp band limit (Eq. 1) with constant total
 intensity; ✓ shadow tweezers appear at ±(λF/v)Δf during fades (mid-fade intensity ½ of a
-trap) and vanish outside fading zones — arrays grow an (Mx+2)×My extended grid for odd Mx,
-(Mx+1)×My at every instant for even Mx; ✓ interlaced vs simultaneous fading comparison.
-[Corrected post-verification: offset was misstated as 2λF/v·Δf; the extended-grid width is
-parity-dependent.]
+trap) and vanish outside fading zones — arrays grow an (Mx+2)×My extended grid during an
+x hand-over and are Mx×My otherwise, for odd and even Mx alike, with every requested trap lit
+throughout; ✓ interlaced vs simultaneous fading comparison.
+[Corrected post-verification: offset was misstated as 2λF/v·Δf.  Corrected again in round 2
+(R2-core): the earlier "(Mx+1)×My at every instant for even Mx" was a defect, not a parity
+rule — with a common ξ an even-M B ladder held only M rungs during each A hand-over, so the
+requested block walked a pitch and an end column went dark; Table II's even-M B ladder now
+sits half a rung off the A one (ξ_B = ξ_A + ½), which also lands it on Eq. S19's lattice.]
 
 **M5 — Product layer.**
 `api.py` front door, trajectory DSL, parametric-NPZ waveform storage + sample rendering
@@ -283,9 +289,9 @@ powers to 3e-4; ✓ in `bragg_band` mode the compression comes out `(2J₁(C)/C)
 degenerates to the weak model as `C²`; ✓ the guide's flagship 10×10 Shepard drive passes with
 its *position* metrics at the default tolerances below and its intensity metrics at
 drive-justified openings (waist 12 %, uniformity 30 % — a 30-rung ladder at C = 0.3 carries a
-real ~20 % IM3 intensity spread plus a ρ = 0.30 fade-apodization waist ripple; the openings
-are pinned from both sides by the test, and their reduced fault-detection power is a tracked
-WO-23 finding, F-2, reconciled in WO-24); ✓ three deliberate corruptions of a 3×3 drive fail,
+real ~17 % IM3 intensity spread (~20 % before the R2 even-M fix) plus a ρ = 0.30
+fade-apodization waist ripple; the openings are pinned from both sides by the test, and their
+reduced fault-detection power is a tracked WO-23 finding, F-2, reconciled in WO-24); ✓ three deliberate corruptions of a 3×3 drive fail,
 each naming its metric: an `Ax` chirp-sign flip → `lateral` + `astigmatism`, a dropped `Bx`
 ladder tone → `missing trap`, 5 % on one `Bx` tone → `uniformity` (and only that).
 
