@@ -71,7 +71,7 @@ from .params import (
 )
 from .poly import PiecewisePoly
 from .trajectory import ramps, spec
-from .trajectory.spec import ArraySpec, Hold, Lift, TrajectorySpec, Translate
+from .trajectory.spec import ArraySpec, Hold, Lift, Path, TrajectorySpec, Translate
 from .viz.movie import auto_grid, render_movie
 from .waveform.shepard import (
     ChannelFade,
@@ -122,6 +122,7 @@ __all__ = [
     "Lift",
     "MotionPlan",
     "OpticsParams",
+    "Path",
     "PiecewisePoly",
     "PlanReport",
     "ShepardConfig",

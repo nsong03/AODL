@@ -1,0 +1,49 @@
+name: webapp
+
+# AODL Studio (webapp/): backend packages `aodl_webapp` + `aodl_advanced` and the Vite frontend.
+# The root `ci.yml` covers `src/aodl` and `tests/` (including the `Path` move's tests); this
+# workflow covers everything under `webapp/`.  Both run on every push and pull request.
+
+on: [push, pull_request]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # a missing or broken advanced router must fail the suite, never ship silently (DESIGN §3)
+      AODL_STUDIO_STRICT_ADVANCED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -e ".[dev]" -e "webapp/backend[dev]"
+      - run: ruff check webapp/backend webapp/scripts
+      - run: ruff format --check webapp/backend webapp/scripts
+      - run: python -m mypy src/aodl_webapp src/aodl_advanced
+        working-directory: webapp/backend
+      - run: python -m pytest webapp/backend/tests -q
+      # the golden fixtures the frontend tests run against must match the backend that is checked in
+      - run: python webapp/scripts/gen_frontend_fixtures.py
+      - run: git diff --exit-code -- webapp/frontend/tests/fixtures
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: webapp/frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: webapp/frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --run
+      - run: npm run build

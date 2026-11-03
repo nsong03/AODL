@@ -190,6 +190,33 @@ Two properties are worth knowing before you use a Shepard drive:
   at **half a trap's power** mid-fade (Eq. S31). `plan.report.fade_events` is the timetable:
   do not schedule a pick-up inside a fade zone.
 
+### 3.7 Arbitrary 3D paths: `Path`
+
+The fourth move, `Path(points, duration, closed=False)`, threads the array through arbitrary
+waypoints `(dx, dy, dz)` given **relative to where the path starts**, along a clamped cubic
+spline (`scipy.interpolate.CubicSpline`, `bc_type="clamped"`) with knot times proportional to
+the chord lengths. It is rest-to-rest like every other move — zero velocity at both ends, so it
+chains with a continuous frequency law — `C²` at the interior knots and `C¹` at its two ends,
+where the acceleration steps exactly as the `constant_jerk` profile's does (a single waypoint
+*is* that profile). `closed=True` appends a return to the start; consecutive duplicate
+waypoints are refused by name. Nothing downstream changes: `synthesize`, the band checks,
+`shepard="auto"` and `plan_motion` only ever see the compiled polynomials.
+
+```python
+from aodl import Path
+
+loop = TrajectorySpec(
+    array=ArraySpec(),
+    moves=(
+        Lift(3 * um, 30 * us),
+        Path(points=((5 * um, 0, 0), (5 * um, 5 * um, 2 * um), (0, 5 * um, 0)),
+             duration=200 * us, closed=True),   # a tilted loop, back to the start
+        Lift(-3 * um, 30 * us),
+    ),
+)
+loop_plan = plan_motion(loop)                   # Eq. S19 as usual: mode "s19"
+```
+
 ---
 
 ## 4. Parameter reference

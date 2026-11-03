@@ -13,10 +13,11 @@ channels.  Nothing here knows about frequencies except :meth:`ArraySpec.from_pit
 the one place a *pitch* in metres is traded for a *tone spacing* in hertz through Table I's
 ``deflection_scale = lambda F / v``.
 
-**The three moves.**  A :class:`Lift` changes only ``Z``, a :class:`Translate` only ``X``/``Y``
-(both axes at once, sharing one profile and duration), a :class:`Hold` freezes all three.
-There is deliberately **no** ``Lower`` class: lowering is ``Lift(dz=-...)``, because the
-profile, the continuity rules and the bandwidth cost are identical either way.  Every move is
+**The four moves.**  A :class:`Lift` changes only ``Z``, a :class:`Translate` only ``X``/``Y``
+(both axes at once, sharing one profile and duration), a :class:`Hold` freezes all three, and
+a :class:`Path` threads a clamped cubic spline through arbitrary 3D waypoints.  There is
+deliberately **no** ``Lower`` class: lowering is ``Lift(dz=-...)``, because the profile, the
+continuity rules and the bandwidth cost are identical either way.  Every move is
 rest-to-rest, so the array is stationary at every seam and any sequence is continuous by
 construction (asserted in :meth:`TrajectorySpec.compile`).
 
@@ -35,6 +36,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.interpolate import CubicSpline
 
 from ..params import AODLParams
 from ..poly import PiecewisePoly
@@ -44,6 +46,13 @@ from .ramps import RAMPS, hold
 #: Segments are built from a running position, so the only difference across a seam is
 #: floating-point round-off (~1e-16 relative); anything larger is a construction bug.
 CONTINUITY_RTOL = 1e-9
+
+#: Distance [m] below which a :class:`Path` waypoint counts as *the same point* as another:
+#: ``closed=True`` does not append a return to the start when the last point already is one,
+#: and a chord shorter than this is a zero-length chord.  A picometre is far below anything
+#: a tweezer resolves (the focal waist is a micron) and far above float64 round-off on
+#: micron-scale coordinates.
+PATH_POINT_TOL = 1e-12
 
 
 def _positive_duration(duration: float, what: str) -> float:
@@ -220,8 +229,109 @@ class Hold:
         object.__setattr__(self, "duration", _positive_duration(self.duration, "Hold"))
 
 
+@dataclass(frozen=True)
+class Path:
+    """Smooth 3D waypoint path: a clamped cubic spline through relative waypoints.
+
+    The array leaves the position where the path starts, visits every waypoint in order and
+    comes to rest at the last one (or back where it started, with ``closed=True``).  Knot
+    times are allocated in proportion to the chord lengths between consecutive waypoints, so
+    the array moves at a roughly uniform speed along the polyline, and the position law
+    through the knots is the **clamped cubic spline** of :class:`scipy.interpolate.CubicSpline`
+    (``bc_type="clamped"``): zero velocity at both ends — rest-to-rest like every other move,
+    so it chains with a continuous frequency law — ``C^2`` at the interior knots and ``C^1``
+    at its two ends, where the acceleration steps exactly as the ``constant_jerk`` profile's
+    does (Eq. S15).  A single waypoint *is* that profile: the clamped cubic between two rest
+    points is ``3 tau^2 - 2 tau^3``.
+
+    Attributes
+    ----------
+    points:
+        Waypoints ``(dx, dy, dz)`` [m], **relative to the position where the path starts**
+        (the implicit first waypoint is ``(0, 0, 0)``).  At least one; consecutive waypoints
+        must differ (a zero-length chord has no direction to interpolate along).
+    duration:
+        Total time [s] of the move, strictly positive.
+    closed:
+        ``True`` appends a return to the start, ``(0, 0, 0)``, unless the last point already
+        is one (within :data:`PATH_POINT_TOL`).
+
+    Everything downstream — Eq. S19 synthesis, the band checks, ``shepard="auto"`` — works
+    unchanged, because it only ever asks for the compiled piecewise polynomials
+    (:meth:`TrajectorySpec.compile`); each spline piece is one degree-3 segment per axis in
+    normalized local time.
+    """
+
+    points: tuple[tuple[float, float, float], ...]
+    duration: float
+    closed: bool = False
+
+    def __post_init__(self) -> None:
+        raw = tuple(self.points)
+        if not raw:
+            raise ValueError("Path needs at least one waypoint")
+        normalized: list[tuple[float, float, float]] = []
+        for i, point in enumerate(raw):
+            values = tuple(point)
+            if len(values) != 3:
+                raise ValueError(f"Path.points[{i}] must be a (dx, dy, dz) triple, got {point!r}")
+            normalized.append(
+                (
+                    _finite(values[0], f"Path.points[{i}][0]"),
+                    _finite(values[1], f"Path.points[{i}][1]"),
+                    _finite(values[2], f"Path.points[{i}][2]"),
+                )
+            )
+        closed = bool(self.closed)
+        if closed and any(abs(v) > PATH_POINT_TOL for v in normalized[-1]):
+            normalized.append((0.0, 0.0, 0.0))
+        object.__setattr__(self, "points", tuple(normalized))
+        object.__setattr__(self, "duration", _positive_duration(self.duration, "Path"))
+        object.__setattr__(self, "closed", closed)
+
+    @property
+    def end(self) -> tuple[float, float, float]:
+        """Where the path ends, relative to where it started [m]."""
+        return self.points[-1]
+
+    def compile(
+        self, t0: float, start: tuple[float, float, float]
+    ) -> tuple[PiecewisePoly, PiecewisePoly, PiecewisePoly]:
+        """Position laws ``(X, Y, Z)`` [m] on ``[t0, t0 + duration]`` from absolute ``start``.
+
+        Waypoints are ``start + points[i]``, knot times ``t0 + duration * cumlen_i /
+        cumlen_n`` from the chord lengths, and the spline is clamped (zero velocity at both
+        ends).  ``CubicSpline.c[j, k, axis]`` is the coefficient of ``(t - knot_k)^(3 - j)``,
+        so in the normalized local time of segment ``k`` (width ``T_k``) the coefficient of
+        ``tau^m`` is ``c[3 - m, k, axis] * T_k^m``.
+        """
+        relative = np.array([(0.0, 0.0, 0.0), *self.points], dtype=np.float64)
+        chords = np.linalg.norm(np.diff(relative, axis=0), axis=1)
+        short = np.nonzero(chords <= PATH_POINT_TOL)[0]
+        if short.size:
+            i = int(short[0])
+            raise ValueError(
+                f"Path waypoint {i} duplicates waypoint {i - 1} (chord length "
+                f"{chords[i]:.3g} m): waypoints are relative to the path start, consecutive "
+                f"ones must differ, and a zero-length chord has no direction to interpolate "
+                f"along.  Drop the duplicate, or use Hold to pause."
+            )
+        cumulative = np.concatenate([[0.0], np.cumsum(chords)])
+        knots = float(t0) + self.duration * cumulative / cumulative[-1]
+        absolute = relative + np.asarray(start, dtype=np.float64)[None, :]
+        spline = CubicSpline(knots, absolute, axis=0, bc_type="clamped")
+        widths = np.diff(knots)
+        powers = widths[:, None] ** np.arange(4, dtype=np.float64)[None, :]  # (K, 4)
+        out = []
+        for axis in range(3):
+            # c[3 - m, k] is the coefficient of (t - knot_k)^m; normalize to tau^m.
+            coeffs = spline.c[::-1, :, axis].T * powers  # (K, 4), column m <-> tau^m
+            out.append(PiecewisePoly(knots, coeffs))
+        return out[0], out[1], out[2]
+
+
 #: Anything accepted in :attr:`TrajectorySpec.moves`.
-Move = Lift | Translate | Hold
+Move = Lift | Translate | Hold | Path
 
 
 # ------------------------------------------------------------------------- the trajectory
@@ -285,9 +395,10 @@ class TrajectorySpec:
             raise TypeError(f"TrajectorySpec.array must be an ArraySpec, got {type(self.array)!r}")
         moves = tuple(self.moves)
         for i, move in enumerate(moves):
-            if not isinstance(move, Lift | Translate | Hold):
+            if not isinstance(move, Lift | Translate | Hold | Path):
                 raise TypeError(
-                    f"TrajectorySpec.moves[{i}] must be a Lift, Translate or Hold, got {move!r}"
+                    f"TrajectorySpec.moves[{i}] must be a Lift, Translate or Hold (or a Path), "
+                    f"got {move!r}"
                 )
         object.__setattr__(self, "moves", moves)
 
@@ -306,7 +417,8 @@ class TrajectorySpec:
         Continuity of the value at every seam is checked here (:func:`_check_continuity`);
         velocity continuity comes for free from the rest-to-rest profiles of
         :mod:`aodl.trajectory.ramps` — every profile except ``"linear"`` also starts and ends
-        at rest, and ``"min_jerk"`` at zero acceleration too.
+        at rest, and ``"min_jerk"`` at zero acceleration too — and from the clamped ends of a
+        :class:`Path` spline.
         """
         if not self.moves:
             raise ValueError(
@@ -318,6 +430,13 @@ class TrajectorySpec:
         t0 = 0.0
         for move in self.moves:
             span = move.duration
+            if isinstance(move, Path):
+                start = (position[0], position[1], position[2])
+                for axis, poly in enumerate(move.compile(t0, start)):
+                    segments[axis].append(poly)
+                position = [start[axis] + move.end[axis] for axis in range(3)]
+                t0 += span
+                continue
             if isinstance(move, Lift):
                 target = [position[0], position[1], position[2] + move.dz]
                 ramped = (False, False, True)
@@ -346,10 +465,12 @@ class TrajectorySpec:
 
 __all__ = [
     "CONTINUITY_RTOL",
+    "PATH_POINT_TOL",
     "ArraySpec",
     "Hold",
     "Lift",
     "Move",
+    "Path",
     "TrajectorySpec",
     "Translate",
 ]
