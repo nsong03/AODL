@@ -739,9 +739,7 @@ def _notes(
                     "rectangles are ramped, and the cos^p A windows already switch smoothly."
                 )
             else:
-                ladders = [
-                    axis for axis, count in (("x", array.mx), ("y", array.my)) if count > 1
-                ]
+                ladders = [axis for axis, count in (("x", array.mx), ("y", array.my)) if count > 1]
                 axes = " and ".join(ladders)
                 whose = f"{axes} ladders'" if len(ladders) > 1 else f"{axes} ladder's"
                 notes.append(

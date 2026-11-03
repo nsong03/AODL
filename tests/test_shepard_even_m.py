@@ -84,54 +84,56 @@ def _wo17(wfs, array: ArraySpec) -> ShepardConfig:
     return ShepardConfig(dfx, dfy, config=config, comb_offset=comb)
 
 
-def _site_census(wfs, params, times: np.ndarray, array: ArraySpec):
-    """Per-frame ``(requested-site powers, brightest other spot, total power, handing-over)``.
+def _site_census(wfs, params, times: np.ndarray, array: ArraySpec) -> dict[str, np.ndarray]:
+    """Per-frame site powers, the brightest other spot, the total, and the hand-over state.
 
     Every term's centre ``theta1 F / k`` is binned onto Eq. S19's lattice
     ``(n - (M - 1)/2) pitch`` within ``0.25 pitch`` per axis; a requested site is ``0 <= n < M``
-    on both axes.  Anything else — the two extended columns of a hand-over, Eq. S31 shadows of
-    a free axis, or a term off the lattice altogether — counts toward "other", binned the same
-    way.  ``handing_over`` is whether either ``A`` ladder had two live rungs anywhere in the
-    transit window ``[t - tau, t]`` that the aperture integrates at frame time ``t``.
+    on both axes.  A free (single-tweezer) axis is binned at its own ladder spacing, so its Eq.
+    S31 shadows land on the neighbouring nodes.  Anything not on a requested site — the two
+    extended columns of a hand-over, shadows, or a term off the lattice altogether — counts
+    toward ``other``, binned the same way.
+
+    ``fading[:, i]`` is the number of extra live ``A`` rungs on axis ``i`` (``1`` while it hands
+    over) anywhere in the transit window ``[t - tau, t]`` the aperture integrates at frame time
+    ``t``, and ``switching[:, i]`` whether that number changes inside the window.
     """
     optics = params.optics
     tau = params.channels["Ax"].transit_time
-    # an array axis' pitch is its own spacing; a free axis' is its auto-sized ladder spacing,
-    # so that its Eq. S31 shadows land on the neighbouring (non-requested) nodes
-    spacing = np.array([_spacing(wfs, "Ax"), _spacing(wfs, "Ay")])
-    pitch = spacing * params.deflection_scale
-    first = -0.5 * (np.array([array.mx, array.my]) - 1) * pitch
     counts = np.array([array.mx, array.my])
+    pitch = np.array([_spacing(wfs, "Ax"), _spacing(wfs, "Ay")]) * params.deflection_scale
+    first = -0.5 * (counts - 1) * pitch
 
-    sites, other, total, fading = [], [], [], []
+    out: dict[str, list] = {"sites": [], "other": [], "total": [], "fading": [], "switching": []}
     for t in times:
         terms = build_terms(wfs, float(t))
         xc, yc, _, _ = spot_params(terms, optics, 0.0)
         power = _term_power(terms, optics)
-        pos = np.stack([np.asarray(xc), np.asarray(yc)])
-        index = (pos - first[:, None]) / pitch[:, None]
+        index = (np.stack([np.asarray(xc), np.asarray(yc)]) - first[:, None]) / pitch[:, None]
         node = np.round(index)
         on_lattice = np.all(np.abs(index - node) < 0.25, axis=0)
         requested = on_lattice & np.all((node >= 0) & (node < counts[:, None]), axis=0)
 
         grid = np.zeros((array.mx, array.my))
-        np.add.at(grid, (node[0, requested].astype(int), node[1, requested].astype(int)), power[requested])
-        sites.append(grid.ravel())
+        ij = node[:, requested].astype(int)
+        np.add.at(grid, (ij[0], ij[1]), power[requested])
+        out["sites"].append(grid.ravel())
 
         bins: dict[tuple[float, float], float] = {}
         for k in np.nonzero(~requested)[0]:
-            key = (float(node[0, k]), float(node[1, k])) if on_lattice[k] else (float(xc[k]), float(yc[k]))
+            key = (node[0, k], node[1, k]) if on_lattice[k] else (index[0, k], index[1, k])
             bins[key] = bins.get(key, 0.0) + float(power[k])
-        other.append(max(bins.values(), default=0.0))
-        total.append(float(np.sum(power)))
+        out["other"].append(max(bins.values(), default=0.0))
+        out["total"].append(float(np.sum(power)))
 
         window = np.linspace(float(t) - tau, float(t), 9)
         live = [
             np.sum([np.asarray(tone.env.A(window)) > 0.0 for tone in wfs.channels[a].tones], axis=0)
             for a in ("Ax", "Ay")
         ]
-        fading.append(tuple(int(np.max(n)) - 1 for n in live) + tuple(int(np.ptp(n) > 0) for n in live))
-    return np.array(sites), np.array(other), np.array(total), np.array(fading)
+        out["fading"].append([int(np.max(n)) - 1 for n in live])
+        out["switching"].append([bool(np.ptp(n) > 0) for n in live])
+    return {key: np.array(value) for key, value in out.items()}
 
 
 @pytest.mark.parametrize(
@@ -142,12 +144,12 @@ def _site_census(wfs, params, times: np.ndarray, array: ArraySpec):
 def test_even_m_array_sites_stay_lit_through_hand_overs(params1030, mx, my, dfx, dfy):
     """Every requested site of an even-``M`` array is >= 0.80 of the plateau at every frame.
 
-    Closure: with the half-rung ``xi_B`` the worst requested site reads 0.86-0.94 of the first
-    frame's median site (the ``rho`` ripple of a 1 MHz ladder, ``docs/guide.md`` §6.4 — a 3x3
-    shows the same), no spot elsewhere outshines a site, and the total power away from
-    hand-overs is ``M_x M_y`` sites' worth.  Regression: the same ladders with the WO-17 timing
-    (``xi_B = xi_A`` and a frequency-only ``delta_f/2`` comb) put a requested site below 0.05 —
-    the defect this closes.
+    Closure: with the half-rung ``xi_B`` the worst requested site reads 0.97-0.98 of the first
+    frame's median site on these 40 frames (0.95 on a 400-frame grid) — the ``rho`` ripple of
+    a 1 MHz ladder, ``docs/guide.md`` §6.4, and a 3x3 reads the same 0.967 — no spot elsewhere
+    outshines a site, and total power is conserved.  Regression: the same ladders on the WO-17
+    timing (``xi_B = xi_A`` and a frequency-only ``delta_f/2`` comb) put a requested site at
+    0.0001-0.005 — the defect this closes.
     """
     params = _linear(params1030)
     tau = params.channels["Ax"].transit_time
@@ -157,23 +159,25 @@ def test_even_m_array_sites_stay_lit_through_hand_overs(params1030, mx, my, dfx,
     assert plan.report.mode == "shepard"
     times = np.linspace(2.0 * tau, HOLD_END + 0.5 * tau, N_FRAMES)
 
-    sites, other, total, fading = _site_census(plan.wfs, params, times, array)
-    ref = float(np.median(sites[0]))
+    fixed = _site_census(plan.wfs, params, times, array)
+    ref = float(np.median(fixed["sites"][0]))
     assert ref > 0.0
-    worst = float(sites.min() / ref)
-    print(f"\n{mx}x{my}: worst {worst:.3f} other {other.max() / ref:.3f} quiet {quiet_dbg(fading)} ")
+    worst = float(fixed["sites"].min() / ref)
     assert worst >= 0.80, f"a requested site fell to {worst:.3f} of the plateau"
-    assert float(other.max() / ref) <= 1.05
-    quiet = ~fading
-    if dfx != dfy:  # equal spacings interlace perfectly: some axis is always handing over
-        assert quiet.sum() >= 3
-    np.testing.assert_allclose(total[quiet] / (mx * my * ref), 1.0, atol=0.05)
+    assert float(fixed["other"].max() / ref) <= 1.05
 
+    # Power is conserved: each hand-over adds exactly one column (row) of light — the switched
+    # extended one — and nothing else.  Checked where the state is steady across the transit
+    # window and no free axis is fading (whose Eq. S31 shadows carry light of their own).
+    array_axis = np.array([mx > 1, my > 1])
+    steady = ~np.any(fixed["switching"], axis=1) & ~np.any(
+        ~array_axis & (fixed["fading"] > 0), axis=1
+    )
+    assert steady.sum() >= 2
+    lit = np.prod(np.array([mx, my]) + array_axis * fixed["fading"], axis=1)
+    np.testing.assert_allclose(fixed["total"][steady] / (lit[steady] * ref), 1.0, atol=0.05)
+
+    # Regression half: the same ladders on the WO-17 timing leave a requested site dark.
     old = plan_motion(spec, params, shepard=_wo17(plan.wfs, array))
-    old_sites, _, _, _ = _site_census(old.wfs, params, times, array)
-    old_worst = float(old_sites.min() / ref)  # the same ladders, the same plateau
+    old_worst = float(_site_census(old.wfs, params, times, array)["sites"].min() / ref)
     assert old_worst < 0.05, f"the WO-17 timing kept every site at >= {old_worst:.3f}"
-
-
-def quiet_dbg(f):
-    return int((~f).sum())

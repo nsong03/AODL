@@ -317,7 +317,9 @@ def test_the_array_grid_grows_two_columns_that_switch_on_at_full_brightness(para
 
     widths, brightest_extra = set(), 0.0
     for t in np.linspace(tau, spec.duration, 120):
-        nodes, residual = _lattice(build_terms(wfs, float(t)), optics, (first, first), (pitch, pitch))
+        nodes, residual = _lattice(
+            build_terms(wfs, float(t)), optics, (first, first), (pitch, pitch)
+        )
         assert residual < 0.01 * optics.waist0
         columns = {i for i, _ in nodes}
         rows = {j for _, j in nodes}
