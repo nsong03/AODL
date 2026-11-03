@@ -383,8 +383,15 @@ class CutPoint(_Response):
 
 
 class Cuts(_Response):
+    """API.md §5.2 — closed-form line cuts through the brightest spot (SI power per m²).
+
+    ``i_x`` runs over ``x_um`` (the XY row nearest ``through.y_um``), ``i_y`` over the frame's
+    ``xy.y_um`` (the XY column nearest ``through.x_um``), ``i_z`` over ``z_um``.
+    """
+
     x_um: list[float]
     i_x: list[float]
+    i_y: list[float]
     z_um: list[float]
     i_z: list[float]
     through: CutPoint
@@ -407,6 +414,11 @@ class FrameResponse(_Response):
     xz: ImageXZ | None
     cuts: Cuts
     spots: list[Spot]
+    #: ``sum 2 P / (pi wx wy)`` over the spots within one waist of the brightest (SI W/m²
+    #: scale of ``xy.image.peak``); ``0`` for a dark frame.
+    gauss_peak: float
+    #: ``max`` of the XY image (``== xy.image.peak``), the exact closed-form peak.
+    exact_peak: float
 
 
 class ApertureRequest(_Request):

@@ -58,8 +58,16 @@ keys.
 ```
 
 `ExampleSpec = {"id": str, "title": str, "blurb": str, "tags": [str], "request": PlanRequest}`.
-Required ids (used by the landing page): `pick_and_place`, `square_xy`, `sphere_loop`,
-`single_lift_hold`, `array_lift_hold`, `array_arbitrary_path`, `flagship_10x10`.
+Required ids, in this order (used by the landing page and the tutorial): `pick_and_place`,
+`square_xy`, `sphere_loop`, `single_lift_hold`, `array_lift_hold`, `array_arbitrary_path`,
+`flagship_10x10`, `tutorial_hold_plain`, `tutorial_hold_shepard`. The two tutorial examples
+share one single-tweezer trajectory (`Lift +10 µm / 60 µs`, `Hold 600 µs`, `Lift −10 µm /
+60 µs`): `tutorial_hold_plain` has `options.shepard = "never"`, `options.check_band = false`
+(tags `["tutorial", "no-shepard"]`; plans as `mode = "s19"` with the `check_band=False` note
+and negative `band_usage` margins on all four channels — the drive leaves the band after
+Eq. 1's 206 µs, which the flat-efficiency closed-form engine does not see);
+`tutorial_hold_shepard` has default options (tags `["tutorial", "shepard"]`; `mode =
+"shepard"`).
 
 ## 3. Shared request models
 
@@ -225,16 +233,26 @@ look at an x hand-over.
 {"plan_id": "...", "time_us": 30.0, "plane_z_um": 2.0,
  "xy": {"x_um": [...nx], "y_um": [...ny], "image": b64u16},
  "xz": {"x_um": [...], "z_um": [...], "row_y_um": 0.0, "image": b64u16} | null,
- "cuts": {"x_um": [...], "i_x": [...], "z_um": [...], "i_z": [...], "through": {"x_um":..,"y_um":..}},
- "spots": [Spot, ...]}
+ "cuts": {"x_um": [...], "i_x": [...], "i_y": [...ny], "z_um": [...], "i_z": [...], "through": {"x_um":..,"y_um":..}},
+ "spots": [Spot, ...],
+ "gauss_peak": <float>, "exact_peak": <float>}
 ```
 `nx, ny, nz ≤ 512`. `time_us` must satisfy `aodl.simulate`'s coverage rule (else 400
 `coverage`). The XZ slice reuses the XY grid's `x` range on `nx` points; its `z_um` axis is
 `plane_z_um ± z_half_um` on `nz` points (centred on the evaluation plane), and `row_y_um:
 null` snaps to the tweezer row nearest the power-weighted centre (`SimResult.spot_row`).
-Cuts go through the brightest spot of the frame: `i_x` is the XY image row nearest its `y`,
-`i_z` an exact axial cut at its `(x, y)` over `cuts.z_um` (the XZ `z` axis when `xz` is
-requested, else `plane_z_um ± 8 µm` on 96 points). `movie_mixing_order` is resolved exactly
+Cuts go through the brightest spot of the frame: `i_x` is the XY image row nearest its `y`
+(over `cuts.x_um`, `nx` points), `i_y` the XY image column nearest its `x` (over `xy.y_um`,
+`ny` points), `i_z` an exact axial cut at its `(x, y)` over `cuts.z_um` (the XZ `z` axis when
+`xz` is requested, else `plane_z_um ± 8 µm` on 96 points). All three are closed-form
+(Eq. S11) intensities, unpacked floats on the §0.3 scale (SI power per m²). `gauss_peak` is
+the astigmatic-Gaussian peak `Σ 2·power/(π·wx·wy)` (radii in metres) over the spots whose
+lateral centres lie within one waist `w0` of the brightest spot — the coincident groups of a
+hand-over add — on the same SI per-m² scale; `exact_peak` is the maximum of the XY image
+(`== xy.image.peak`). Their ratio `exact_peak / gauss_peak` is ≈ 1 for an unwindowed
+single-term trap on its own plane (within 2 % for a static tweezer at `t = 3τ`); a dark frame
+(no spots) has `gauss_peak = 0`. With a fixed or explicit plane the Gaussian peak is still the
+spot's in-focus value, so the ratio then also measures defocus. `movie_mixing_order` is resolved exactly
 as in §5.1, so the exact frame shows the same spot set as the movie (`null` → the hardware
 order unless the > 160-group fallback applies). `spots` are the §5.1 clusters of this frame,
 unrounded and uncut.

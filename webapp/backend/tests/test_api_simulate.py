@@ -11,7 +11,7 @@ from conftest import as_json
 from aodl.units import um
 from aodl_webapp.examples import example_request
 from aodl_webapp.planner import get_plan
-from aodl_webapp.schemas import PackedImage
+from aodl_webapp.schemas import HoldMove, PackedImage, PlanRequest, TranslateMove
 from aodl_webapp.simulation import pack_image, unpack_image
 
 TAU_US = 7.5e-3 / 650.0 / 1e-6  # D / v
@@ -294,6 +294,12 @@ def test_exact_peak_matches_the_spot_metrics_scale(client, static_tweezer):
     spot = max(body["spots"], key=lambda s: s["power"])
     expected = 2.0 * spot["power"] / (math.pi * spot["wx_um"] * um * spot["wy_um"] * um)
     assert body["xy"]["image"]["peak"] == pytest.approx(expected, rel=0.02)
+    # F4: the same comparison as returned by the route itself
+    assert body["exact_peak"] == pytest.approx(body["xy"]["image"]["peak"], rel=1e-12)
+    assert body["gauss_peak"] == pytest.approx(expected, rel=1e-9)
+    assert body["exact_peak"] / body["gauss_peak"] == pytest.approx(1.0, abs=0.02)
+    assert max(body["cuts"]["i_x"]) == pytest.approx(body["exact_peak"], rel=1e-3)
+    assert max(body["cuts"]["i_y"]) == pytest.approx(body["exact_peak"], rel=1e-3)
     assert body["xz"] is None
     assert len(body["cuts"]["z_um"]) == 96  # the default axial cut
 
@@ -349,3 +355,42 @@ def test_frame_spots_match_the_simulate_frame(client, single_lift_hold):
     )
     plan_obj = get_plan(single_lift_hold)
     assert plan_obj.report.mode == "shepard"
+
+
+def test_y_cut_peaks_at_the_brightest_spot_and_cuts_match_their_axes(client):
+    """F4: ``i_y`` is the XY column through the brightest spot's ``x``, over ``xy.y_um``."""
+    req = PlanRequest(
+        moves=[
+            TranslateMove(kind="translate", dx_um=-1.5, dy_um=3.0, duration_us=40.0),
+            HoldMove(kind="hold", duration_us=60.0),
+        ]
+    )
+    body = _frame(
+        client,
+        req,
+        time_us=70.0,
+        grid={"x0_um": -5.0, "x1_um": 3.0, "nx": 81, "y0_um": -2.0, "y1_um": 6.0, "ny": 121},
+    )
+    bright = max(body["spots"], key=lambda s: s["power"])
+    assert bright["x_um"] == pytest.approx(-1.5, abs=0.05)
+    assert bright["y_um"] == pytest.approx(3.0, abs=0.05)
+    cuts = body["cuts"]
+    assert len(cuts["i_x"]) == len(cuts["x_um"]) == len(body["xy"]["x_um"]) == 81
+    assert len(cuts["i_y"]) == len(body["xy"]["y_um"]) == 121
+    assert len(cuts["i_z"]) == len(cuts["z_um"]) == 40
+    i_y = np.asarray(cuts["i_y"])
+    y_axis = np.asarray(body["xy"]["y_um"])
+    assert y_axis[int(np.argmax(i_y))] == pytest.approx(bright["y_um"], abs=0.07)
+    # the column is the XY image column nearest the spot's x
+    image = unpack_image(PackedImage(**body["xy"]["image"]))
+    column = int(np.argmin(np.abs(np.asarray(body["xy"]["x_um"]) - cuts["through"]["x_um"])))
+    np.testing.assert_allclose(image[:, column], i_y, atol=body["exact_peak"] / 65535 + 1e-30)
+    assert body["exact_peak"] == pytest.approx(max(body["xy"]["image"]["peak"], i_y.max()))
+    assert body["gauss_peak"] > 0.0
+
+
+def test_dark_frame_has_zero_gaussian_peak(client, static_tweezer):
+    body = _frame(client, static_tweezer, time_us=0.25 * TAU_US, xz=None)
+    assert body["spots"] == []
+    assert body["gauss_peak"] == 0.0
+    assert len(body["cuts"]["i_y"]) == len(body["xy"]["y_um"])

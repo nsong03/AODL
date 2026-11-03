@@ -474,6 +474,24 @@ def _resolve_plane(req: FrameRequest, result: SimResult) -> float:
     return track_z(result.metrics[0])
 
 
+def gaussian_peak(spots: list[Spot], bright: Spot, waist0_um: float) -> float:
+    """Astigmatic-Gaussian peak intensity of the trap at ``bright`` [W/m² scale of §0.3].
+
+    ``sum 2 P / (pi wx wy)`` over the spots whose lateral centres lie within ``waist0_um`` of
+    ``bright`` (the coincident groups of a hand-over, DESIGN §1 item 2) — the on-axis value
+    of the Eq. S11 spot in its Gaussian (unwindowed, single-term) limit, with ``wx, wy`` the
+    :class:`aodl.SpotMetrics` 1/e² radii (µm in :class:`Spot`, converted to metres here).
+    """
+    total = 0.0
+    for spot in spots:
+        if math.hypot(spot.x_um - bright.x_um, spot.y_um - bright.y_um) > waist0_um:
+            continue
+        area = math.pi * (spot.wx_um * um) * (spot.wy_um * um)
+        if area > 0.0:
+            total += 2.0 * spot.power / area
+    return total
+
+
 def frame_response(req: FrameRequest) -> FrameResponse:
     """API.md §5.2: the closed-form intensity frame (Eq. S11) at one instant."""
     plan = get_plan(req.plan)
@@ -506,14 +524,17 @@ def frame_response(req: FrameRequest) -> FrameResponse:
             image=pack_image(slice_xz),
         )
 
-    # cuts through the brightest spot: the XY row nearest its y, and an exact axial cut at
-    # its (x, y) column
+    # cuts through the brightest spot: the XY row nearest its y, the XY column nearest its x,
+    # and an exact axial cut at its (x, y)
+    gauss_peak = 0.0
     if spots:
         bright = max(spots, key=lambda s: s.power)
         through = CutPoint(x_um=bright.x_um, y_um=bright.y_um)
+        gauss_peak = gaussian_peak(spots, bright, optics.waist0 / um)
     else:
         through = CutPoint(x_um=0.5 * (g.x0_um + g.x1_um), y_um=0.5 * (g.y0_um + g.y1_um))
     row = int(np.argmin(np.abs(grid.y / um - through.y_um)))
+    column = int(np.argmin(np.abs(grid.x / um - through.x_um)))
     if req.xz is not None:
         z_cut = np.linspace(plane - req.xz.z_half_um * um, plane + req.xz.z_half_um * um, req.xz.nz)
     else:
@@ -526,6 +547,7 @@ def frame_response(req: FrameRequest) -> FrameResponse:
     cuts = Cuts(
         x_um=(grid.x / um).tolist(),
         i_x=xy[row].tolist(),
+        i_y=xy[:, column].tolist(),
         z_um=(z_cut / um).tolist(),
         i_z=i_z.tolist(),
         through=through,
@@ -538,6 +560,8 @@ def frame_response(req: FrameRequest) -> FrameResponse:
         xz=xz_model,
         cuts=cuts,
         spots=spots,
+        gauss_peak=gauss_peak,
+        exact_peak=float(np.max(xy)) if xy.size else 0.0,
     )
 
 
@@ -551,6 +575,7 @@ __all__ = [
     "frame_response",
     "frame_spots",
     "frame_times",
+    "gaussian_peak",
     "get_cached_sim",
     "get_sim",
     "pack_image",

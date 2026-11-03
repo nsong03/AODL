@@ -25,7 +25,7 @@ def test_health(client):
     assert body["version"]
 
 
-def test_presets_list_the_seven_examples(client):
+def test_presets_list_the_nine_examples(client):
     body = client.get("/api/presets").json()
     assert set(body["hardware_presets"]) == {"default_1030", "paper_808"}
     assert body["hardware_presets"]["paper_808"]["wavelength_nm"] == pytest.approx(808.0)
@@ -37,7 +37,8 @@ def test_presets_list_the_seven_examples(client):
         "linear",
     ]
     assert [e["id"] for e in body["examples"]] == list(EXAMPLE_IDS)
-    assert len(EXAMPLES) == 7
+    assert len(EXAMPLES) == 9
+    assert list(EXAMPLE_IDS)[-2:] == ["tutorial_hold_plain", "tutorial_hold_shepard"]
 
 
 @pytest.mark.parametrize("example_id", EXAMPLE_IDS)
@@ -61,9 +62,32 @@ def test_every_example_plans_in_its_expected_mode(client, example_id):
         assert body["fade_events"], "a fading drive has a hand-over schedule"
         assert body["z_budget"]["ceiling_m_s"] is None
         assert body["z_budget"]["fraction"] > 1.0
+    elif example_id == "tutorial_hold_plain":
+        # forced Eq. S19 past the Eq. 1 budget with the band check off: plans, but every
+        # channel leaves the band and the plan says the band was not verified
+        assert body["fade_events"] == []
+        assert body["z_budget"]["fraction"] > 1.0
+        assert any("check_band=False" in note for note in body["notes"])
+        for name, usage in body["band_usage"].items():
+            assert usage["margin_MHz"] < 0.0, (name, usage)
     else:
         assert body["fade_events"] == []
         assert 0.0 < body["z_budget"]["fraction"] <= 1.0
+    if example_id == "tutorial_hold_shepard":
+        assert all(usage["margin_MHz"] >= 0.0 for usage in body["band_usage"].values())
+
+
+def test_tutorial_pair_shares_one_trajectory(client):
+    """F3: the two tutorial examples differ only in their options."""
+    plain = example_request("tutorial_hold_plain")
+    shepard = example_request("tutorial_hold_shepard")
+    assert as_json(plain)["moves"] == as_json(shepard)["moves"]
+    assert as_json(plain)["array"] == as_json(shepard)["array"]
+    assert (plain.options.shepard, plain.options.check_band) == ("never", False)
+    assert (shepard.options.shepard, shepard.options.check_band) == ("auto", True)
+    tags = {e.id: e.tags for e in EXAMPLES}
+    assert tags["tutorial_hold_plain"] == ["tutorial", "no-shepard"]
+    assert tags["tutorial_hold_shepard"] == ["tutorial", "shepard"]
 
 
 def test_plan_id_is_stable_and_equals_the_formula(client, pick_and_place):

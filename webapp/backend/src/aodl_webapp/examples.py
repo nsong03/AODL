@@ -1,10 +1,13 @@
-"""The seven starter trajectories of API.md §2 (ids used by the landing page).
+"""The nine starter trajectories of API.md §2 (ids used by the landing page and the tutorial).
 
 Geometry in µm and µs as the API speaks it; everything else at the request defaults.
 Expected modes at default options (``webapp/docs/reports/REVIEW.md``): ``pick_and_place``,
 ``square_xy``, ``sphere_loop`` and ``array_arbitrary_path`` plan as plain Eq. S19 (``s19``);
 ``single_lift_hold``, ``array_lift_hold`` and ``flagship_10x10`` need the fading-Shepard
-ladders (``shepard``).  ``tests/test_api_plan.py`` asserts every one of them.
+ladders (``shepard``).  The two tutorial examples (design addendum F3) hold one tweezer at
+10 µm for 600 µs: ``tutorial_hold_plain`` forces plain Eq. S19 with ``check_band=False`` (so
+it plans as ``s19`` *outside* the band), ``tutorial_hold_shepard`` is the same trajectory at
+default options (``shepard``).  ``tests/test_api_plan.py`` asserts every one of them.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from .schemas import (
     HoldMove,
     LiftMove,
     PathMove,
+    PlanOptions,
     PlanRequest,
     TranslateMove,
 )
@@ -30,6 +34,8 @@ EXPECTED_MODES: dict[str, str] = {
     "array_lift_hold": "shepard",
     "array_arbitrary_path": "s19",
     "flagship_10x10": "shepard",
+    "tutorial_hold_plain": "s19",
+    "tutorial_hold_shepard": "shepard",
 }
 
 
@@ -93,11 +99,18 @@ def _request(
     moves: list[LiftMove | TranslateMove | HoldMove | PathMove],
     mx: int = 1,
     my: int = 1,
+    options: PlanOptions | None = None,
 ) -> PlanRequest:
     return PlanRequest(
         array=ArraySpecModel(mx=mx, my=my, delta_f_x_MHz=1.0, delta_f_y_MHz=1.3),
         moves=list(moves),
+        options=options if options is not None else PlanOptions(),
     )
+
+
+def _tutorial_hold() -> list[LiftMove | TranslateMove | HoldMove | PathMove]:
+    """The F3 tutorial trajectory: lift 10 µm in 60 µs, hold 600 µs, lower in 60 µs."""
+    return [_lift(10.0, 60.0), _hold(600.0), _lift(-10.0, 60.0)]
 
 
 EXAMPLES: list[ExampleSpec] = [
@@ -179,6 +192,25 @@ EXAMPLES: list[ExampleSpec] = [
             mx=10,
             my=10,
         ),
+    ),
+    ExampleSpec(
+        id="tutorial_hold_plain",
+        title="Tutorial: hold without Shepard tones",
+        blurb="One tweezer lifted 10 µm and held 600 µs on a plain Eq. S19 drive "
+        "(shepard = never, check_band = false). The co-chirp walks every channel out of the "
+        "90–110 MHz band after Eq. 1's 206 µs, so a real AOD stops diffracting — but the "
+        "closed-form engine assumes flat diffraction efficiency and keeps the trap bright.",
+        tags=["tutorial", "no-shepard"],
+        request=_request(_tutorial_hold(), options=PlanOptions(shepard="never", check_band=False)),
+    ),
+    ExampleSpec(
+        id="tutorial_hold_shepard",
+        title="Tutorial: hold with fading-Shepard tones",
+        blurb="The same 10 µm lift and 600 µs hold at default options: plan_motion falls back "
+        "to fading-Shepard ladders, so every tone stays inside the band and the trap is "
+        "handed from rung to rung instead of walking out.",
+        tags=["tutorial", "shepard"],
+        request=_request(_tutorial_hold()),
     ),
 ]
 
