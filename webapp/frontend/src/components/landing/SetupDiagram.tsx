@@ -1,7 +1,12 @@
 /**
- * Inline SVG of the four-AOD stack (arXiv:2510.11451 Fig. 1 / `docs/PLAN.md` §1.1), drawn as
- * an oblique projection so both acoustic axes are visible: the optical axis z runs left →
- * right, x is up, +y comes out of the page toward the viewer (down-left). Each crystal is a
+ * Inline SVG of the four-AOD stack (arXiv:2510.11451 Fig. 1(a) / `docs/PLAN.md` §1.1) in its
+ * physical order: laser → Ax → Ay → 4f relay → Bx → By → objective → focal volume. The first
+ * 2D deflector (the A pair, crossed x and y) sits before the relay, the second (the B pair)
+ * after it; the relay images the A acoustic plane onto the B plane with magnification −1, so
+ * all four apertures are superposed in one common pupil frame, which is the frame the sound
+ * directions are drawn in. Drawn as an oblique projection so both acoustic axes are visible:
+ * the optical axis z runs left → right, x is up, +y comes out of the page toward the viewer
+ * (down-left). Each crystal is a
  * slab in its channel colour with its transducer on the face the sound starts from
  * (`aodl.device.conventions.CHANNEL_GEOMETRY`: Ax sound −x ⇒ transducer on the +x face, Bx +x
  * ⇒ −x face, Ay −y ⇒ +y (front) face, By +y ⇒ −y (back) face), acoustic wavefronts fading away
@@ -25,11 +30,20 @@ interface Slab {
 }
 
 const SLABS: Slab[] = [
-  { name: 'Ax', cx: 160, sound: '−x', role: 'first x deflector', tone: 'single tone · lateral X' },
-  { name: 'Bx', cx: 420, sound: '+x', role: 'second x deflector', tone: 'column ladder (Δf_x)' },
-  { name: 'Ay', cx: 520, sound: '−y', role: 'first y deflector', tone: 'single tone · lateral Y' },
-  { name: 'By', cx: 610, sound: '+y', role: 'second y deflector', tone: 'row ladder (Δf_y)' },
+  { name: 'Ax', cx: 140, sound: '−x', role: 'first x deflector', tone: 'single tone · X' },
+  { name: 'Ay', cx: 240, sound: '−y', role: 'first y deflector', tone: 'single tone · Y' },
+  { name: 'Bx', cx: 490, sound: '+x', role: 'second x deflector', tone: 'column ladder Δf_x' },
+  { name: 'By', cx: 590, sound: '+y', role: 'second y deflector', tone: 'row ladder Δf_y' },
 ]
+
+/** The two 2D deflectors, boxed around their slabs. */
+const GROUPS = [
+  { x0: 92, x1: 288, label: 'first 2D deflector', sub: 'A pair: Ax, Ay (before the relay)' },
+  { x0: 442, x1: 638, label: 'second 2D deflector', sub: 'B pair: Bx, By (after the relay)' },
+]
+const L1 = 320 // relay lenses
+const L2 = 410
+const RELAY_FOCUS = (L1 + L2) / 2
 
 function slabOrigin(cx: number): { x0: number; y0: number } {
   // the slab's centre (mid-depth) sits on the optical axis
@@ -170,8 +184,9 @@ export function SetupDiagram() {
     <svg className="diagram" viewBox="0 0 900 360" role="img" aria-labelledby="setup-title setup-desc">
       <title id="setup-title">The four-AOD acousto-optic deflector lens</title>
       <desc id="setup-desc">
-        Laser, first x deflector Ax (sound toward −x, transducer on the +x face), a 4f relay, second x deflector Bx (sound +x), first y
-        deflector Ay (sound −y), second y deflector By (sound +y), objective, focal volume with the trap trajectory.
+        Left to right: laser; the first 2D deflector (A pair): Ax (sound toward −x, transducer on the +x face) then Ay (sound −y, transducer on the
+        +y face); a 4f relay of two lenses that images the A plane onto the B plane with magnification −1; the second 2D deflector (B pair): Bx
+        (sound +x) then By (sound +y); the objective; the focal volume with the trap trajectory.
       </desc>
       <defs>
         <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
@@ -194,12 +209,25 @@ export function SetupDiagram() {
       {/* optical axis */}
       <line x1={70} y1={AXIS_Y} x2={860} y2={AXIS_Y} stroke="#3a4352" strokeWidth={1} strokeDasharray="3 5" />
 
-      {/* beam: collimated through the stack, a 4f relay between Ax and Bx, converging after the objective */}
-      <rect x={70} y={AXIS_Y - beamHalf} width={125} height={2 * beamHalf} fill="url(#beamfade)" />
-      <polygon points={`195,${AXIS_Y - beamHalf} 195,${AXIS_Y + beamHalf} 290,${AXIS_Y + 2} 290,${AXIS_Y - 2}`} fill={beam} opacity={0.18} />
-      <polygon points={`290,${AXIS_Y - 2} 290,${AXIS_Y + 2} 385,${AXIS_Y + beamHalf} 385,${AXIS_Y - beamHalf}`} fill={beam} opacity={0.18} />
-      <rect x={385} y={AXIS_Y - beamHalf} width={330} height={2 * beamHalf} fill={beam} opacity={0.15} />
+      {/* beam: collimated through the A pair, focused and re-collimated by the 4f relay, collimated through the B pair, converging after the objective */}
+      <rect x={70} y={AXIS_Y - beamHalf} width={L1 - 70} height={2 * beamHalf} fill="url(#beamfade)" />
+      <polygon points={`${L1},${AXIS_Y - beamHalf} ${L1},${AXIS_Y + beamHalf} ${RELAY_FOCUS},${AXIS_Y + 2} ${RELAY_FOCUS},${AXIS_Y - 2}`} fill={beam} opacity={0.18} />
+      <polygon points={`${RELAY_FOCUS},${AXIS_Y - 2} ${RELAY_FOCUS},${AXIS_Y + 2} ${L2},${AXIS_Y + beamHalf} ${L2},${AXIS_Y - beamHalf}`} fill={beam} opacity={0.18} />
+      <rect x={L2} y={AXIS_Y - beamHalf} width={715 - L2} height={2 * beamHalf} fill={beam} opacity={0.15} />
       <polygon points={`715,${AXIS_Y - beamHalf} 715,${AXIS_Y + beamHalf} 805,${AXIS_Y + 1.5} 805,${AXIS_Y - 1.5}`} fill={beam} opacity={0.22} />
+
+      {/* the two 2D deflectors */}
+      {GROUPS.map((g) => (
+        <g key={g.label}>
+          <rect x={g.x0} y={78} width={g.x1 - g.x0} height={216} rx={8} fill="none" stroke="#5a6472" strokeWidth={1} strokeDasharray="5 4" />
+          <text x={(g.x0 + g.x1) / 2} y={70} textAnchor="middle" fill="#d7dde5" fontSize={11} fontWeight={600}>
+            {g.label}
+          </text>
+          <text x={(g.x0 + g.x1) / 2} y={92} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
+            {g.sub}
+          </text>
+        </g>
+      ))}
 
       {/* laser */}
       <rect x={18} y={AXIS_Y - 16} width={52} height={32} rx={3} fill="#1b2130" stroke="#5a6472" />
@@ -211,17 +239,23 @@ export function SetupDiagram() {
       </text>
 
       {/* 4f relay */}
-      <Lens cx={243} h={74} />
-      <Lens cx={337} h={74} />
-      <line x1={243} y1={AXIS_Y - 46} x2={337} y2={AXIS_Y - 46} stroke="#9aa5b3" strokeWidth={1} markerStart="url(#arrow-dim)" markerEnd="url(#arrow-dim)" />
-      <text x={290} y={AXIS_Y - 52} textAnchor="middle" fill="#d7dde5" fontSize={10}>
-        4f relay (mag. −1)
+      <Lens cx={L1} h={74} />
+      <Lens cx={L2} h={74} />
+      <line x1={L1} y1={AXIS_Y - 44} x2={L2} y2={AXIS_Y - 44} stroke="#9aa5b3" strokeWidth={1} markerStart="url(#arrow-dim)" markerEnd="url(#arrow-dim)" />
+      <text x={RELAY_FOCUS} y={AXIS_Y - 76} textAnchor="middle" fill="#d7dde5" fontSize={10}>
+        4f relay
       </text>
-      <text x={290} y={AXIS_Y - 63} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
-        images Ax onto Bx
+      <text x={RELAY_FOCUS} y={AXIS_Y - 64} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
+        images the A plane onto
       </text>
-      <text x={290} y={AXIS_Y + 48} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
-        A's deflection → B's incidence angle
+      <text x={RELAY_FOCUS} y={AXIS_Y - 52} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
+        the B plane, magnification −1
+      </text>
+      <text x={RELAY_FOCUS} y={AXIS_Y + 52} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
+        A's deflection → B's
+      </text>
+      <text x={RELAY_FOCUS} y={AXIS_Y + 64} textAnchor="middle" fill="#9aa5b3" fontSize={9.5}>
+        incidence angle
       </text>
 
       {SLABS.map((s) => (
@@ -276,7 +310,7 @@ export function SetupDiagram() {
       </g>
 
       {/* legend */}
-      <g transform="translate(250 300)" fontSize={10} fill="#d7dde5">
+      <g transform="translate(250 306)" fontSize={10} fill="#d7dde5">
         <rect x={0} y={0} width={14} height={5} fill="#f2f5f8" />
         <text x={20} y={6}>
           transducer (sound source face)
@@ -292,10 +326,10 @@ export function SetupDiagram() {
         </text>
         <line x1={190} y1={20} x2={204} y2={20} stroke="#f2f5f8" strokeWidth={2} markerEnd="url(#arrow)" />
         <text x={210} y={24}>
-          sound direction (counter-propagating in each pair)
+          sound direction in the common pupil frame (Ax/Bx and Ay/By counter-propagate)
         </text>
         <text x={0} y={42} fill="#9aa5b3" fontSize={9.5}>
-          A/B pairs: deflections subtract (X ∝ f_Bx − f_Ax), chirp lenses add (Z̄ ∝ Σ ḟ): the lens sign does not depend on the sound direction.
+          Ax/Bx and Ay/By: deflections subtract (X ∝ f_Bx − f_Ax), chirp lenses add (Z̄ ∝ Σ ḟ): the lens sign does not depend on the sound direction.
         </text>
       </g>
     </svg>

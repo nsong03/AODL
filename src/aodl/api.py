@@ -715,24 +715,21 @@ def _notes(
         )
     if mode == "shepard":
         if array.mx > 1 or array.my > 1:
-            parity = []
+            extra = []
             for axis, count, what in (("x", array.mx, "columns"), ("y", array.my, "rows")):
                 if count == 1:
                     continue
-                parity.append(
-                    f"{axis}: {count} + 2 {what} during a hand-over"
-                    if count % 2
-                    else f"{axis}: {count} + 1 {what} at every instant"
-                )
+                extra.append(f"{axis}: {count} + 2 {what} during a hand-over, {count} otherwise")
             notes.append(
                 "the fading ladder lights extra columns beyond the array you asked for ("
-                + "; ".join(parity)
+                + "; ".join(extra)
                 + ") - do not schedule a pick-up inside a fade zone (see fade_events)."
             )
-            if any(count % 2 == 0 for count in (array.mx, array.my)):
+            if any(count > 1 and count % 2 == 0 for count in (array.mx, array.my)):
                 notes.append(
-                    "even-M ladders carry a delta_f/2 comb offset so their traps land on the "
-                    "same lattice as Eq. S19 (WO-17 §2.1); it costs delta_f/2 of band."
+                    "even-M ladders: the B ladder is offset by half a rung (xi_B = xi_A + 1/2), "
+                    "so the array lands on Eq. S19's lattice and every requested site stays lit "
+                    "through each hand-over."
                 )
             if ramp == 0.0:
                 notes.append(
@@ -742,24 +739,16 @@ def _notes(
                     "rectangles are ramped, and the cos^p A windows already switch smoothly."
                 )
             else:
-                odd = [
-                    axis
-                    for axis, count in (("x", array.mx), ("y", array.my))
-                    if count > 1 and count % 2
+                ladders = [
+                    axis for axis, count in (("x", array.mx), ("y", array.my)) if count > 1
                 ]
-                axes = " and ".join(odd)
-                whose = f"{axes} ladders'" if len(odd) > 1 else f"{axes} ladder's"
-                cost = (
-                    f"the interior columns stay exactly flat, and only the {whose} two "
-                    f"edge columns dip, by ~(pi |gdot| r / delta_f)^2 / 5 during a hand-over"
-                    if odd
-                    else "every column of the array stays exactly flat (an even-M rung "
-                    "switches mid-plateau, where the A ladder is not handing over)"
-                )
+                axes = " and ".join(ladders)
+                whose = f"{axes} ladders'" if len(ladders) > 1 else f"{axes} ladder's"
                 notes.append(
                     f"switch_ramp = {ramp / us:.3g} us softens the p_B = 0 rectangles and "
-                    f"nothing else: {cost}.  Such a drive does not round-trip through the "
-                    f"parametric NPZ."
+                    f"nothing else: the interior columns stay exactly flat, and only the "
+                    f"{whose} two edge columns dip, by ~(pi |gdot| r / delta_f)^2 / 5 during a "
+                    f"hand-over.  Such a drive does not round-trip through the parametric NPZ."
                 )
         notes.append(
             "shadow tweezers at +- deflection_scale * delta_f carry half a trap's power "

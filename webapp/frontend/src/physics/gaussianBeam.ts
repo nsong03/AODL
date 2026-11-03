@@ -10,9 +10,12 @@
  *
  * (`aodl.field.focal.spot_params`; `SpotMetrics.wx/wy` are these radii at `Z = z`). `P` is on
  * the `intensity_frame` scale, so the approximation and an exact frame share one colour scale.
- * Spots add in intensity; each is tinted by its own `z` (`zColor`) and composited additively
- * on black through a gamma, with one global peak over the whole movie (honest dimming), as
- * `aodl.viz.style.composite` does. Units: µm throughout.
+ * Spots add in intensity **before** the display gamma: per pixel the linear intensity `ΣI` and
+ * the intensity-weighted colour `ΣI·rgb` (each spot tinted by its own `z`, `zColor`) are
+ * accumulated over all spots and the pixel is written as `(ΣI·rgb / ΣI) · (ΣI/peak)^γ` — the
+ * rule of `aodl.viz.style.composite` applied to the merged intensity, so two coincident
+ * half-power spots (every fading hand-over, API.md §5.1) look exactly like one full trap. One
+ * global peak over the whole movie (honest dimming). Units: µm throughout.
  */
 import type { SpotFrame } from '../api/types'
 import { GAMMA, zColor } from './zColor'
@@ -66,14 +69,17 @@ export function frameSpots(frame: SpotFrame): SpotLike[] {
   return out
 }
 
+/** Mean-shift iterations used to locate the maxima of a sum of Gaussians (`peakNormalization`). */
+const PEAK_ITERATIONS = 30
+
 /**
- * Global normalisation: the brightest pixel the movie ever shows. For each frame, spots whose
- * centres coincide (within half a 1/e² radius — the dying and rising rung pairs of a fading
- * hand-over, API.md §5.1) have their peaks `P·2/(π w_x w_y)` at the frame's plane summed; the
- * maximum over spots and frames is returned. This is what `aodl.viz.movie._peaks` measures
- * (the max of the summed group frames): summing *every* spot's peak would dim a 16-trap array
- * sixteen-fold, which is not honest dimming. Every frame of the movie is scaled by this one
- * number so a dimming spot looks dimmer.
+ * Global normalisation: the brightest pixel the movie ever shows, measured on the **same merged
+ * intensity** the renderer draws, `ΣI = Σ_k P_k·2/(π w_x w_y)·exp(…)` at each frame's plane.
+ * For every frame and every spot the maximum of `ΣI` nearest that spot is located by a
+ * fixed-point (mean-shift) iteration started at its centre — exact for coincident spots (the
+ * dying and rising rung pairs of a fading hand-over sum, as in `aodl.viz.movie._peaks`) and for
+ * well-separated ones (an array is not dimmed by its trap count). Every frame of the movie is
+ * scaled by this one number, so a dimming spot looks dimmer.
  */
 export function peakNormalization(frames: readonly SpotFrame[], planes: ArrayLike<number>, w0: number, zR: number): number {
   let peak = 0
@@ -82,7 +88,9 @@ export function peakNormalization(frames: readonly SpotFrame[], planes: ArrayLik
     const z = planes[i]
     const n = f.x_um.length
     const pk = new Float64Array(n)
-    const wmax = new Float64Array(n)
+    const ix = new Float64Array(n) // 1/w_x²
+    const iy = new Float64Array(n)
+    const reach = new Float64Array(n)
     for (let k = 0; k < n; k++) {
       const zx = f.z_um[k] + 0.5 * f.delta_f_um[k]
       const zy = f.z_um[k] - 0.5 * f.delta_f_um[k]
@@ -91,14 +99,46 @@ export function peakNormalization(frames: readonly SpotFrame[], planes: ArrayLik
       const wx = w0 * Math.sqrt(1 + ax * ax)
       const wy = w0 * Math.sqrt(1 + ay * ay)
       pk[k] = (f.power[k] * 2) / (Math.PI * wx * wy)
-      wmax[k] = Math.max(wx, wy)
+      ix[k] = 1 / (wx * wx)
+      iy[k] = 1 / (wy * wy)
+      reach[k] = PATCH_WAISTS * Math.max(wx, wy)
     }
     for (let k = 0; k < n; k++) {
-      let sum = pk[k]
-      const r = 0.5 * wmax[k]
+      if (!(pk[k] > 0)) continue
+      // neighbours that can overlap spot k at all
+      const near: number[] = []
       for (let j = 0; j < n; j++) {
-        if (j === k) continue
-        if (Math.abs(f.x_um[j] - f.x_um[k]) < r && Math.abs(f.y_um[j] - f.y_um[k]) < r) sum += pk[j]
+        if (!(pk[j] > 0)) continue
+        const r = reach[k] + reach[j]
+        if (Math.abs(f.x_um[j] - f.x_um[k]) < r && Math.abs(f.y_um[j] - f.y_um[k]) < r) near.push(j)
+      }
+      let x = f.x_um[k]
+      let y = f.y_um[k]
+      const iters = near.length > 1 ? PEAK_ITERATIONS : 0
+      for (let it = 0; it < iters; it++) {
+        // stationarity of ΣI: x = Σ I_j x_j / w_xj² / Σ I_j / w_xj² (likewise y)
+        let nx = 0
+        let dx = 0
+        let ny = 0
+        let dy = 0
+        for (const j of near) {
+          const u = x - f.x_um[j]
+          const v = y - f.y_um[j]
+          const g = pk[j] * Math.exp(-2 * (u * u * ix[j] + v * v * iy[j]))
+          nx += g * ix[j] * f.x_um[j]
+          dx += g * ix[j]
+          ny += g * iy[j] * f.y_um[j]
+          dy += g * iy[j]
+        }
+        if (!(dx > 0 && dy > 0)) break
+        x = nx / dx
+        y = ny / dy
+      }
+      let sum = 0
+      for (const j of near) {
+        const u = x - f.x_um[j]
+        const v = y - f.y_um[j]
+        sum += pk[j] * Math.exp(-2 * (u * u * ix[j] + v * v * iy[j]))
       }
       if (sum > peak) peak = sum
     }
@@ -111,7 +151,9 @@ export const PATCH_WAISTS = 4
 
 /**
  * Render an XY frame at `plane_z` → RGB `Float32Array` of length `ny·nx·3` (row 0 = y0, imshow
- * convention), additive, hue by each spot's `z`, patch-based with separable 1-D profiles.
+ * convention). Patch-based with separable 1-D profiles; per pixel `ΣI` and `ΣI·rgb` are
+ * accumulated over the spots (hue by each spot's `z`) and written as
+ * `(ΣI·rgb / ΣI) · min(ΣI/peakNorm, 1)^γ` (module doc).
  */
 export function renderXY(
   spots: readonly SpotLike[],
@@ -132,6 +174,8 @@ export function renderXY(
   const dy = (grid.y1 - grid.y0) / (ny - 1)
   const fx = new Float64Array(nx)
   const fy = new Float64Array(ny)
+  const sumI = new Float64Array(nx * ny)
+  const sumC = new Float64Array(nx * ny * 3)
   for (const s of spots) {
     const [wx, wy] = spotRadii(s, plane_z, w0, zR)
     const amp = (s.power * 2) / (Math.PI * wx * wy) / peakNorm
@@ -160,24 +204,31 @@ export function renderXY(
       const row = j * nx
       const ay = amp * fy[j]
       for (let i = i0; i <= i1; i++) {
-        let val = ay * fx[i]
-        if (val > 1) val = 1
-        const scaled = Math.pow(val, gamma)
-        const p = (row + i) * 3
-        rgb[p] += scaled * cr
-        rgb[p + 1] += scaled * cg
-        rgb[p + 2] += scaled * cb
+        const val = ay * fx[i]
+        const q = row + i
+        sumI[q] += val
+        sumC[q * 3] += val * cr
+        sumC[q * 3 + 1] += val * cg
+        sumC[q * 3 + 2] += val * cb
       }
     }
   }
-  for (let p = 0; p < rgb.length; p++) if (rgb[p] > 1) rgb[p] = 1
+  for (let q = 0; q < sumI.length; q++) {
+    const I = sumI[q]
+    if (!(I > 0)) continue
+    const scaled = Math.pow(I > 1 ? 1 : I, gamma) / I
+    rgb[q * 3] = sumC[q * 3] * scaled
+    rgb[q * 3 + 1] = sumC[q * 3 + 1] * scaled
+    rgb[q * 3 + 2] = sumC[q * 3 + 2] * scaled
+  }
   return rgb
 }
 
 /**
  * Render an XZ slice at `Y = rowY` → RGB `Float32Array` of length `nz·nx·3` (row = z, tinted
- * row by row by its own Z as `aodl.viz.style.tint_by_row` does). No patching along z — a
- * spot sweeps through focus along this axis.
+ * row by row by its own Z as `aodl.viz.style.tint_by_row` does). The spots' linear intensities
+ * are summed per pixel before the gamma (the merged-intensity rule of `renderXY`). No patching
+ * along z — a spot sweeps through focus along this axis.
  */
 export function renderXZ(
   spots: readonly SpotLike[],

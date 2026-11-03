@@ -4,13 +4,14 @@ Four independent knobs on :func:`aodl.waveform.synthesis.synthesize`, plus the `
 column that goes with them.  Every one of them is checked twice over: that it *does* what it
 claims, and that switching it off reproduces the pre-M5 drive bit for bit.
 
-1. **§2.1 lattice alignment.**  A Shepard array's columns sit at the *index differences* of the
-   ``A`` and ``B`` ladders — integer multiples of the pitch — while Eq. S19 centres a counted
-   ladder, which is half-integer multiples for even ``M``.  The
-   :func:`~aodl.waveform.shepard.lattice_comb_offset` correction adds ``delta_f/2`` to the
-   even-``M`` ``B`` rung *frequencies* and to nothing else, so the two modes put the traps in
-   the same places.  This one is a fix, not an option: it is on by default (WO-16 finding F-2),
-   and ``comb_offset={}`` is the escape hatch back to the uncorrected comb.
+1. **§2.1 lattice alignment.**  A Shepard array's columns sit at ``(b + xi_B) - (a + xi_A)``,
+   while Eq. S19 centres a counted ladder, which is half-integer multiples of the pitch for
+   even ``M``.  :func:`~aodl.waveform.shepard.table_ii` gives an even-``M`` ``B`` ladder
+   ``xi_B = xi_A + 1/2``, so the two modes put the traps in the same places *and* every
+   requested site is fed by both live ``A`` rungs through a hand-over.  WO-17's frequency-only
+   ``delta_f/2`` comb offset got the lattice right but not the window timing (one requested
+   column went dark per hand-over, ``R2-DESIGN-ADDENDUM`` §F2); its auto value is now ``0``
+   and an explicit ``comb_offset`` mapping is the only way back to it.
 2. **§2.2 retardation pre-compensation.**  Reading the trajectory ``tau/2`` ahead makes the
    atom plane match the request at ``t`` instead of at ``t - tau/2``.
 3. **§2.3 the ``f_Z`` edge pre-bias.**  Starting the drive half an excursion below the carrier
@@ -19,8 +20,8 @@ claims, and that switching it off reproduces the pre-M5 drive bit for bit.
 4. **§2.4 ``switch_ramp``.**  Raised-cosine on/off ramps for the ``p_B = 0`` rectangles — and
    for nothing else (WO-20 §1): the ``cos^p`` windows switch smoothly already, so ramping them
    bought no continuity and cost flatness.  Scoped that way the ramp leaves every interior
-   column *exactly* where it was; only an odd-``M`` ladder's two edge columns pay, by the law
-   derived here.
+   column *exactly* where it was; only a ladder's two edge columns pay, by the law derived here
+   (both parities alike, now that an even-``M`` ``B`` ladder carries the half-rung ``xi_B``).
 
 ``mixing_order=1`` throughout: these are statements about the frequency/amplitude algebra, not
 about intermodulation.
@@ -132,15 +133,41 @@ def _nodes(
 # ============================================== 2.1 the even-M lattice (WO-16 finding F-2)
 
 
+def _wo17(cfg: ShepardConfig, array: ArraySpec) -> ShepardConfig:
+    """``cfg`` with the WO-17 even-``M`` timing: ``xi_B = xi_A`` plus a ``delta_f/2`` comb.
+
+    That is what ``shepard="auto"`` built before the fix — the lattice right, the ``B``
+    windows half a rung out of phase with the ``A`` hand-overs (``R2-DESIGN-ADDENDUM`` §F2).
+    Odd and single-tweezer axes are left exactly as Table II has them.
+    """
+    config: dict[str, ChannelFade] = {}
+    comb: dict[str, float] = {}
+    for b_name, xi_a, count, spacing in (
+        ("Bx", 0.0, array.mx, cfg.delta_f_x),
+        ("By", 0.5, array.my, cfg.delta_f_y),
+    ):
+        if count > 1 and count % 2 == 0:
+            config[b_name] = ChannelFade(count, 0.0, xi_a)
+            comb[b_name] = 0.5 * spacing
+    return replace(cfg, config=config, comb_offset=comb)
+
+
+def _integer_lattice(cfg: ShepardConfig, array: ArraySpec) -> ShepardConfig:
+    """``cfg`` with neither correction: ``xi_B = xi_A`` and no comb (the pre-M5 drive)."""
+    return replace(_wo17(cfg, array), comb_offset={})
+
+
 @pytest.mark.parametrize("m_x", [2, 3, 4, 5])
 def test_the_shepard_lattice_coincides_with_the_s19_lattice_for_even_and_odd_m(params1030, m_x):
     r"""Same spec, both modes, same trap positions — to float64, for ``M = 2, 3, 4, 5``.
 
     Eq. S19's ladder is ``f^{(n)} = (n - (M-1)/2) delta_f``: for odd ``M`` that is integer
     multiples of ``delta_f`` and for even ``M`` half-integer ones.  A Shepard array's columns
-    come from index differences and are therefore *always* integers, so ``shepard="auto"`` used
-    to move an even-``M`` user array half a pitch sideways.  The comb offset closes that gap,
-    and the escape hatch ``comb_offset={}`` shows exactly how wide it was.
+    come from ``(b + xi_B) - (a + xi_A)``, so with a common ``xi`` they are *always* integers
+    and an even-``M`` array used to sit half a pitch sideways (WO-16 F-2).  Table II's
+    half-rung ``xi_B`` on an even-``M`` axis closes that gap — exactly as the WO-17 comb offset
+    did, which is why the lattice alone could not tell the two apart (the timing can:
+    :func:`test_the_half_rung_xi_b_keeps_every_requested_node_lit_and_the_wo17_comb_did_not`).
     """
     params = _linear(params1030)
     optics = params.optics
@@ -148,66 +175,90 @@ def test_the_shepard_lattice_coincides_with_the_s19_lattice_for_even_and_odd_m(p
     pitch = params.deflection_scale * DF
     spec = TrajectorySpec(array=ArraySpec(m_x, 1, DF, 0.0), moves=SHORT_MOVES)
     probes = np.linspace(tau, spec.duration, 9)
+    cfg = ShepardConfig(DF, DFY_FREE)
 
     s19 = synthesize(spec, params)
-    fixed = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE))
-    uncorrected = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE, comb_offset={}))
+    fixed = synthesize(spec, params, shepard=cfg)
+    wo17 = synthesize(spec, params, shepard=_wo17(cfg, spec.array))
+    uncorrected = synthesize(spec, params, shepard=_integer_lattice(cfg, spec.array))
 
-    worst_fixed = max(
-        _mismatch(_columns(s19, optics, t), _columns(fixed, optics, t)) for t in probes
-    )
-    worst_old = max(
-        _mismatch(_columns(s19, optics, t), _columns(uncorrected, optics, t)) for t in probes
-    )
+    def worst(wfs: WaveformSet) -> float:
+        return max(_mismatch(_columns(s19, optics, t), _columns(wfs, optics, t)) for t in probes)
+
+    worst_fixed = worst(fixed)
     assert worst_fixed < 0.01 * optics.waist0
-    assert worst_fixed < 1e-12 * pitch  # ... in fact exact: one constant, added to one comb
+    assert worst_fixed < 1e-9 * pitch  # ... in fact exact to rounding
+    assert worst(wo17) < 1e-9 * pitch  # the WO-17 comb had the lattice right too
     if m_x % 2 == 0:
-        assert worst_old == pytest.approx(0.5 * pitch, rel=1e-9)  # the F-2 half-pitch offset
+        assert worst(uncorrected) == pytest.approx(0.5 * pitch, rel=1e-9)  # the F-2 offset
     else:
-        assert worst_old == worst_fixed  # odd M never needed the correction
+        assert worst(uncorrected) == worst_fixed  # odd M never needed a correction
 
 
-def test_the_comb_offset_moves_frequencies_and_leaves_every_other_structure_alone(params1030):
-    """``g``, the windows, the schedule, the rung count and the ``A`` channels are untouched.
+def test_the_half_rung_xi_b_carries_the_lattice_and_the_comb_offset_is_zero(params1030):
+    """``xi_B = xi_A + 1/2`` gives the very frequency laws the WO-17 comb did — and other windows.
 
-    That is the whole argument for putting the correction on the frequency instead of on the
-    fade coordinate: the hand-over schedule depends on ``g`` alone, and co-location depends on
-    index *differences*, so a constant common to every ``B`` rung cannot disturb either.
+    Rung ``n`` of the fixed ``B`` ladder runs at ``f_lat + f_Z + (n + xi_A + 1/2) delta_f``,
+    which is rung ``n`` of the WO-17 ladder (``(n + xi_A) delta_f + delta_f/2``) to the last
+    bit of the law; what differs is its fade coordinate, ``g`` larger by ``delta_f/2``, i.e.
+    the window timing — the one thing the frequency-only offset could not move.  The ``A``
+    channels are untouched, ``"auto"`` resolves to zero comb on every channel, and an explicit
+    mapping is still honoured verbatim.
     """
     params = _linear(params1030)
     spec = TrajectorySpec(array=ArraySpec(4, 4, DF, 1.3 * MHz), moves=SHORT_MOVES)
-    fixed = synthesize(spec, params, shepard=ShepardConfig(DF, 1.3 * MHz))
-    uncorrected = synthesize(spec, params, shepard=ShepardConfig(DF, 1.3 * MHz, comb_offset={}))
+    cfg = ShepardConfig(DF, 1.3 * MHz)
+    fixed = synthesize(spec, params, shepard=cfg)
+    wo17 = synthesize(spec, params, shepard=_wo17(cfg, spec.array))
     probes = np.linspace(*fixed.t_span, 401)
 
-    expected = {"Ax": 0.0, "Ay": 0.0, "Bx": 0.5 * DF, "By": 0.5 * 1.3 * MHz}
-    for name in CHANNELS:
-        left, right = fixed.channels[name].tones, uncorrected.channels[name].tones
-        assert len(left) == len(right)  # same ladder, same live rungs
+    for name in ("Ax", "Ay"):  # the A ladders are the same drive, bit for bit
+        left, right = fixed.channels[name].tones, wo17.channels[name].tones
+        assert len(left) == len(right)
         for one, two in zip(left, right, strict=True):
-            # the frequency laws differ by exactly the comb offset, everywhere
-            delta = np.asarray(one.freq(probes)) - np.asarray(two.freq(probes))
-            np.testing.assert_allclose(delta, expected[name], rtol=0, atol=1e-6)
-            # ... and the envelopes are the very same object's values, bit for bit
+            np.testing.assert_array_equal(one.freq.coeffs, two.freq.coeffs)
             np.testing.assert_array_equal(
                 np.asarray(one.env.A(probes)), np.asarray(two.env.A(probes))
             )
-            np.testing.assert_array_equal(one.env.g.coeffs, two.env.g.coeffs)
-            assert one.phase0 == two.phase0
+    for name, spacing in (("Bx", DF), ("By", 1.3 * MHz)):
+        old = {round(float(tone.freq(probes[0])), 3): tone for tone in wo17.channels[name].tones}
+        matched = 0
+        for tone in fixed.channels[name].tones:
+            twin = old.get(round(float(tone.freq(probes[0])), 3))
+            if twin is None:
+                continue  # a rung only one of the two windows ever opens
+            matched += 1
+            np.testing.assert_allclose(
+                np.asarray(tone.freq(probes)), np.asarray(twin.freq(probes)), rtol=0, atol=1e-6
+            )
+            np.testing.assert_allclose(
+                np.asarray(tone.env.g(probes)) - np.asarray(twin.env.g(probes)),
+                0.5 * spacing,
+                rtol=0,
+                atol=1e-6,
+            )
+        assert matched >= spec.array.mx  # the same live comb, give or take an edge rung
 
-    # Table II's offsets themselves: delta_f/2 on an even-M B ladder, nothing anywhere else.
-    fades = ShepardConfig(DF, 1.3 * MHz).resolve(spec.array)
-    assert ShepardConfig(DF, 1.3 * MHz).comb_offsets(fades) == expected
+    # Table II carries the half pitch now; the comb offset of the auto path is zero everywhere.
+    fades = cfg.resolve(spec.array)
+    assert fades["Bx"].xi == 0.5 and fades["By"].xi == 1.0
+    assert cfg.comb_offsets(fades) == {name: 0.0 for name in CHANNELS}
     assert lattice_comb_offset(ChannelFade(m=3, p=0.0, xi=0.0), DF) == 0.0
-    assert lattice_comb_offset(ChannelFade(m=4, p=0.0, xi=0.0), DF) == 0.5 * DF
+    assert lattice_comb_offset(ChannelFade(m=4, p=0.0, xi=0.0), DF) == 0.0
+    explicit = replace(cfg, comb_offset={"Bx": 0.25 * DF})
+    assert explicit.comb_offsets(fades) == {"Ax": 0.0, "Ay": 0.0, "Bx": 0.25 * DF, "By": 0.0}
 
 
-def test_the_lattice_correction_leaves_power_flatness_and_shadow_offsets_alone(params1030):
-    """Regression against the pre-M5 numbers: the same light, half a pitch across.
+def test_the_half_rung_xi_b_keeps_every_requested_node_lit_and_the_wo17_comb_did_not(
+    params1030,
+):
+    r"""The two drives share a lattice; only the fixed one lights it, at every frame.
 
-    Both the constant-power identity (``p_A + p_B = 1``) and the Eq. S31 shadow offset are
-    statements about index *differences*, so a rigid translation of the ``B`` comb cannot
-    change either — and the measured per-node brightnesses agree term for term.
+    With ``xi_B = xi_A + 1/2`` both live ``A`` rungs of a hand-over see the same ``M + 1``
+    ``B`` rungs, so every requested node reads ``cos^2 + sin^2 = 1`` of the brightest one —
+    exactly, in ``|c|^2`` — while the two extended columns switch.  The WO-17 timing held only
+    ``M`` ``B`` rungs during the hand-over, so the lit block walked by a pitch and an end
+    column of the requested array went dark (``R2-DESIGN-ADDENDUM`` §F2).
     """
     params = _linear(params1030)
     optics = params.optics
@@ -217,39 +268,52 @@ def test_the_lattice_correction_leaves_power_flatness_and_shadow_offsets_alone(p
         array=ArraySpec(4, 1, DF, 0.0),
         moves=(Lift(6.0 * um, 40.0 * us), Hold(80.0 * us), Lift(-6.0 * um, 40.0 * us)),
     )
-    fixed = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE))
-    uncorrected = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE, comb_offset={}))
+    cfg = ShepardConfig(DF, DFY_FREE)
+    fixed = synthesize(spec, params, shepard=cfg)
+    wo17 = synthesize(spec, params, shepard=_wo17(cfg, spec.array))
     grid = (pitch, params.deflection_scale * DFY_FREE)
+    origin = (-1.5 * pitch, 0.0)  # node (0, 0) is the first requested site of Eq. S19
+    requested = [(i, 0) for i in range(spec.array.mx)]
 
-    for t in np.linspace(tau, spec.duration, 24):
-        # the corrected lattice is the old one shifted by exactly half a pitch, node by node
-        new = _nodes(fixed, optics, float(t), grid, origin=(0.5 * pitch, 0.0))
-        old = _nodes(uncorrected, optics, float(t), grid)
-        assert set(new) == set(old)
-        for key, weight in old.items():
-            assert new[key] == pytest.approx(weight, rel=1e-12)
-        # ... and the constant-power identity still holds: the columns fed by both live A rungs
-        # (every one but the two ends of the extended grid) carry exactly the same light.
+    def row0(nodes: dict[tuple[int, int], float]) -> dict[tuple[int, int], float]:
+        """The array row; rows +-1 are the free y axis' own Eq. S31 shadows."""
+        return {key: w for key, w in nodes.items() if key[1] == 0}
+
+    widths, darkest_old = set(), 1.0
+    for t in np.linspace(tau, spec.duration, 48):
+        new = row0(_nodes(fixed, optics, float(t), grid, origin=origin))
+        old = row0(_nodes(wo17, optics, float(t), grid, origin=origin))
+        assert set(new) <= {(i, 0) for i in range(-1, spec.array.mx + 1)}
+        assert set(old) <= {(i, 0) for i in range(-1, spec.array.mx + 1)}  # same lattice
         brightest = max(new.values())
-        flat = [w for w in new.values() if w == pytest.approx(brightest, rel=1e-9)]
-        assert len(flat) >= spec.array.mx - 1
+        for key in requested:
+            assert new[key] == pytest.approx(brightest, rel=1e-9), (key, t)
+        widths.add(len(new))
+        darkest_old = min(darkest_old, min(old.get(k, 0.0) for k in requested) / max(old.values()))
+    assert widths == {spec.array.mx, spec.array.mx + 2}  # M, or M + 2 during a hand-over
+    assert darkest_old < 0.05  # the defect the half rung closes
 
 
-def test_the_shepard_band_bound_gains_the_comb_offset(params1030):
-    """The live window translates with the comb, so the bound it obeys grows by ``|c_comb|``."""
+def test_the_shepard_band_bound_comb_term_is_zero_unless_set_explicitly(params1030):
+    """The live window translates with an explicit comb, so the bound grows by ``|c_comb|``.
+
+    ``xi_B`` lives inside ``g``, so the half rung moves the window *with* the rungs and costs
+    no band at all: the auto path's comb term is zero, and only a hand-set offset is charged.
+    """
     params = _linear(params1030)
-    fade = ChannelFade(m=4, p=0.0, xi=0.0)
+    fade = ChannelFade(m=4, p=0.0, xi=0.5)
     plain = shepard_band_bound(fade, DF, 0.5, 2.0 * MHz)
     shifted = shepard_band_bound(fade, DF, 0.5, 2.0 * MHz, 0.5 * DF)
     assert plain == pytest.approx(0.5 * 4.5 * DF + 2.0 * MHz)
     assert shifted == pytest.approx(plain + 0.5 * DF)
 
-    # ... and a drive that only just fits without the offset is refused with it.
+    # ... and a drive that only just fits at the auto (zero) comb is refused with the old one.
     spec = TrajectorySpec(array=ArraySpec(12, 1, 1.5 * MHz, 0.0), moves=SHORT_MOVES)
     cfg = ShepardConfig(1.5 * MHz, DFY_FREE)
-    synthesize(spec, params, shepard=replace(cfg, comb_offset={}))
-    with pytest.raises(ValueError, match="comb offset that puts an even-M ladder"):
-        synthesize(spec, params, shepard=cfg)
+    assert set(cfg.comb_offsets(cfg.resolve(spec.array)).values()) == {0.0}
+    synthesize(spec, params, shepard=cfg)
+    with pytest.raises(ValueError, match="comb offset"):
+        synthesize(spec, params, shepard=replace(cfg, comb_offset={"Bx": 0.75 * MHz}))
 
 
 # ================================================= 2.2 retardation pre-compensation (tau/2)
@@ -676,21 +740,18 @@ def test_the_switching_column_ramps_up_instead_of_switching_on(params1030, m_x):
     assert brightness(ramped, middle) == pytest.approx(0.25 * brightness(plain, middle), rel=1e-9)
 
 
-@pytest.mark.parametrize("m_x, n_paying", [(3, 1), (4, 0)], ids=["odd-M", "even-M"])
+@pytest.mark.parametrize("m_x, n_paying", [(3, 1), (4, 1)], ids=["odd-M", "even-M"])
 def test_a_ramp_moves_only_the_columns_the_ramping_rung_feeds(params1030, m_x, n_paying):
     r"""The WO-20 §1 ruling, measured: every other column is the un-ramped one, to ``1e-9``.
 
-    A ramp is felt only by the columns its own rung feeds while it is inside the ramp, and how
-    many that is follows from the parity of ``M``: the ``A`` window's outer boundary sits
-    ``(M - 1)/2`` rung spacings inside the rectangle's, so
-
-    * **even** ``M`` — the rung switches half-way between two ``A`` hand-overs, with one ``A``
-      rung live at unit weight.  It feeds **one** column, the one it is arriving at or leaving,
-      and every other column of the pattern is untouched;
-    * **odd** ``M`` — it switches at a hand-over, so it also pairs with the entering (or
-      leaving) ``A`` rung: **two** columns move, the switching one and the array's own edge
-      column next to it, the latter by the law of
-      :func:`test_the_edge_columns_pay_the_documented_rho_law`.
+    A ramp is felt only by the columns its own rung feeds while it is inside the ramp.  The
+    ``A`` window's outer boundary sits ``(M - 1)/2`` rung spacings inside the rectangle's, and
+    with Table II's half-rung ``xi_B`` on an even-``M`` axis a ``B`` rung switches at an ``A``
+    hand-over for **both** parities.  It therefore pairs with the entering (or leaving) ``A``
+    rung too: **two** columns move, the switching one and the array's own edge column next to
+    it, the latter by the law of :func:`test_the_edge_columns_pay_the_documented_rho_law`.
+    (Under the WO-17 even-``M`` timing the rung switched mid-plateau and only one column moved —
+    the same misphasing that let a requested column go dark.)
 
     Everything else — the interior of the array, both extended columns on the far side — is the
     un-ramped drive, term for term.  That is the whole point of scoping the ramp to ``p = 0``.
@@ -729,7 +790,7 @@ def test_a_ramp_moves_only_the_columns_the_ramping_rung_feeds(params1030, m_x, n
         assert len(moved) == n_paying + 1, f"columns {moved} moved at {switch / us:.3f} us"
 
         # one of them is the column the rung is switching (dark on one side of the instant);
-        # the other, on an odd-M ladder, is an array column at full depth that dips a little.
+        # the other is the array's own edge column at full depth that dips a little.
         switching = [d for d in moved if depth[d] < 1e-12]
         paying = [d for d in moved if depth[d] > 0.99]
         assert len(switching) == 1 and len(paying) == n_paying
@@ -737,8 +798,12 @@ def test_a_ramp_moves_only_the_columns_the_ramping_rung_feeds(params1030, m_x, n
             assert 1e-3 < worst[d] < 0.05  # not passing by being tiny; see the rho_r law
 
 
-def test_the_edge_columns_pay_the_documented_rho_law(params1030):
-    r"""What a ramp costs on an odd-``M`` ladder, measured against a law derived here.
+@pytest.mark.parametrize("m_x", [3, 4], ids=["odd-M", "even-M"])
+def test_the_edge_columns_pay_the_documented_rho_law(params1030, m_x):
+    r"""What a ramp costs on an ``M``-column ladder, measured against a law derived here.
+
+    Both parities pay it: with Table II's half-rung ``xi_B`` on an even-``M`` axis a ``B`` rung
+    switches at an ``A`` hand-over exactly as an odd-``M`` one does.
 
     The rung entering at ``t_on`` is precisely the partner of the ``A`` rung entering there, so
     an **edge** column reads ``cos^2 theta + sin^2 theta s(t)^2`` instead of ``1`` during the
@@ -758,8 +823,9 @@ def test_the_edge_columns_pay_the_documented_rho_law(params1030):
     tau = params.channels["Ax"].transit_time
     pitch = params.deflection_scale * DF
     slide = _rung_slide_rate(params)
-    spec = _ladder_spec(3)
-    columns = (-1, 0, 1)
+    spec = _ladder_spec(m_x)
+    columns = tuple(range(m_x))
+    origin = -0.5 * (m_x - 1) * pitch  # column 0 is the first requested site (Eq. S19)
 
     # the shape factor, re-derived numerically rather than trusted
     fine = np.linspace(0.0, 1.0, 200001)
@@ -768,9 +834,9 @@ def test_the_edge_columns_pay_the_documented_rho_law(params1030):
     )
 
     plain = synthesize(spec, params, shepard=ShepardConfig(DF, DFY_FREE))
-    # Table II verbatim: the three columns carry the same light at every instant (p_A + p_B = 1)
+    # Table II verbatim: the M columns carry the same light at every instant (p_A + p_B = 1)
     for t in np.linspace(tau, 200.0 * us, 120):
-        want = _x_columns(plain, optics, float(t), pitch, 0.0)
+        want = _x_columns(plain, optics, float(t), pitch, origin)
         assert min(want[d] for d in columns) == pytest.approx(
             max(want[d] for d in columns), rel=1e-12
         )
@@ -784,8 +850,8 @@ def test_the_edge_columns_pay_the_documented_rho_law(params1030):
         frames = np.concatenate([t_on[rise > 0.0][0] + x * ramp, t_off[fall > 0.0][0] - x * ramp])
         worst = 0.0
         for t in frames + 0.5 * tau:
-            want = _x_columns(plain, optics, float(t), pitch, 0.0)
-            got = _x_columns(wfs, optics, float(t), pitch, 0.0)
+            want = _x_columns(plain, optics, float(t), pitch, origin)
+            got = _x_columns(wfs, optics, float(t), pitch, origin)
             worst = max(worst, max(1.0 - got[d] / want[d] for d in columns))
         measured[ramp] = worst
 

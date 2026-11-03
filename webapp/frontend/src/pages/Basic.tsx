@@ -7,6 +7,7 @@ import { ArrayPanel } from '../components/editor/ArrayPanel'
 import { HardwarePanel } from '../components/editor/HardwarePanel'
 import { MoveList } from '../components/editor/MoveList'
 import { OptionsPanel } from '../components/editor/OptionsPanel'
+import { IntensityPanel } from '../components/intensity/IntensityPanel'
 import { MetricsPlots } from '../components/metrics/MetricsPlots'
 import { ReportCard } from '../components/report/ReportCard'
 import { RfPanel } from '../components/rf/RfPanel'
@@ -78,6 +79,7 @@ export default function Basic() {
         </div>
         <div className="col centre">
           <TweezerView />
+          <IntensityPanel />
         </div>
         <div className="col right">
           <ReportCard />

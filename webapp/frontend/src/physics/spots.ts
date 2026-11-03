@@ -5,6 +5,7 @@
  */
 import type { Bounds, FadeEvent, SimulateResponse, SpotFrame } from '../api/types'
 import { frameSpots, type SpotLike } from './gaussianBeam'
+import { pairFrames, type FramePairing } from './traps'
 
 /** Index of the last frame time `≤ t` (−1 before the first frame). */
 export function frameIndexAt(times: readonly number[], t: number): number {
@@ -36,10 +37,29 @@ export interface InterpolatedFrame {
   i1: number
 }
 
+const pairingCache = new WeakMap<SpotFrame, { b: SpotFrame; w0: number; spotsA: SpotLike[]; spotsB: SpotLike[]; pairing: FramePairing }>()
+
+/** Position pairing of two consecutive frames, cached per frame object (it does not depend on `t`). */
+function cachedPairing(a: SpotFrame, b: SpotFrame, w0: number) {
+  const hit = pairingCache.get(a)
+  if (hit && hit.b === b && hit.w0 === w0) return hit
+  const spotsA = frameSpots(a)
+  const spotsB = frameSpots(b)
+  const entry = { b, w0, spotsA, spotsB, pairing: pairFrames(spotsA, spotsB, w0) }
+  pairingCache.set(a, entry)
+  return entry
+}
+
 /**
- * Spots at cursor time `t`: linear interpolation by index between the bracketing frames when
- * their spot counts match (the backend emits spots in frequency-group order), otherwise the
- * nearest frame. Returns no spots before the first frame or when the frame is empty.
+ * Spots at cursor time `t`, blended between the bracketing frames `a`, `b` (weight `w` of `b`)
+ * **by position**, never by array index (the backend orders spots by frequency group, and on a
+ * fading drive the ladder slides through the groups): spot `i` of `a` pairs with the nearest
+ * unpaired spot of `b` within `0.5·w0`, brightest first, in the frame co-moving with the array
+ * (`physics/traps.ts`). Paired spots interpolate position, `z`, `ΔF` and power; an unpaired spot
+ * of `a` stays where it is with power `(1 − w)·P`, an unpaired spot of `b` with `w·P` — a column
+ * that switches on fades in over one frame interval instead of jumping, and nothing moves that
+ * the physics did not move. `w0 = sim.constants.waist0_um`. Before the first / after the last
+ * frame the end frames are returned unchanged.
  */
 export function spotsAt(sim: SimulateResponse, t: number): InterpolatedFrame {
   const times = sim.times_us
@@ -51,20 +71,32 @@ export function spotsAt(sim: SimulateResponse, t: number): InterpolatedFrame {
   const a = sim.frames[i]
   const b = sim.frames[i + 1]
   const w = (t - times[i]) / (times[i + 1] - times[i])
-  const zt = sim.tracked_z_um[i] * (1 - w) + sim.tracked_z_um[i + 1] * w
-  if (a.x_um.length !== b.x_um.length || a.x_um.length === 0) {
-    const j = w < 0.5 ? i : i + 1
-    return { spots: frameSpots(sim.frames[j]), tracked_z: a.x_um.length === 0 || b.x_um.length === 0 ? sim.tracked_z_um[j] : zt, i0: j, i1: j }
-  }
-  const spots: SpotLike[] = new Array(a.x_um.length)
-  for (let k = 0; k < a.x_um.length; k++) {
-    spots[k] = {
-      x_um: a.x_um[k] * (1 - w) + b.x_um[k] * w,
-      y_um: a.y_um[k] * (1 - w) + b.y_um[k] * w,
-      z_um: a.z_um[k] * (1 - w) + b.z_um[k] * w,
-      delta_f_um: a.delta_f_um[k] * (1 - w) + b.delta_f_um[k] * w,
-      power: a.power[k] * (1 - w) + b.power[k] * w,
+  const empty = a.x_um.length === 0 || b.x_um.length === 0
+  // an empty (dark, t < τ/2) frame has no meaningful tracked plane: take the lit neighbour's
+  const zt = empty ? sim.tracked_z_um[a.x_um.length === 0 ? i + 1 : i] : sim.tracked_z_um[i] * (1 - w) + sim.tracked_z_um[i + 1] * w
+  const { spotsA, spotsB, pairing } = cachedPairing(a, b, sim.constants.waist0_um)
+  const spots: SpotLike[] = []
+  for (let k = 0; k < spotsA.length; k++) {
+    const sa = spotsA[k]
+    const j = pairing.pair[k]
+    if (j < 0) {
+      const p = (1 - w) * sa.power
+      if (p > 0) spots.push({ ...sa, power: p })
+      continue
     }
+    const sb = spotsB[j]
+    spots.push({
+      x_um: sa.x_um * (1 - w) + sb.x_um * w,
+      y_um: sa.y_um * (1 - w) + sb.y_um * w,
+      z_um: sa.z_um * (1 - w) + sb.z_um * w,
+      delta_f_um: sa.delta_f_um * (1 - w) + sb.delta_f_um * w,
+      power: sa.power * (1 - w) + sb.power * w,
+    })
+  }
+  for (let j = 0; j < spotsB.length; j++) {
+    if (pairing.paired[j]) continue
+    const p = w * spotsB[j].power
+    if (p > 0) spots.push({ ...spotsB[j], power: p })
   }
   return { spots, tracked_z: zt, i0: i, i1: i + 1 }
 }

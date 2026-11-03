@@ -308,15 +308,21 @@ def test_table_ii_rows_and_the_s28_ladder_phases():
     array = table_ii(ArraySpec(4, 3, 1.0 * MHz, 1.3 * MHz))
     assert array == {
         "Ax": ChannelFade(1, 1.0, 0.0),
-        "Bx": ChannelFade(4, 0.0, 0.0),
+        "Bx": ChannelFade(4, 0.0, 0.5),  # even M: the B ladder sits half a rung off A
         "Ay": ChannelFade(1, 1.0, 0.5),
-        "By": ChannelFade(3, 0.0, 0.5),
+        "By": ChannelFade(3, 0.0, 0.5),  # odd M: shares A's offset
     }
+    flipped = table_ii(ArraySpec(3, 4, 1.0 * MHz, 1.3 * MHz))
+    assert flipped["Bx"] == ChannelFade(3, 0.0, 0.0)
+    assert flipped["By"] == ChannelFade(4, 0.0, 1.0)  # xi_Ay + 1/2
     for name in CHANNELS:
-        for row in (single, array):
-            assert row[name].xi == (0.0 if name.endswith("x") else 0.5)
+        for row in (single, array, flipped):
+            if name.startswith("A") or row[name].m % 2:  # the A windows set the interlacing
+                assert row[name].xi == (0.0 if name.endswith("x") else 0.5)
+            else:
+                assert row[name].xi == row["A" + name[1]].xi + 0.5
     # p_A + p_B = 1 on every axis of every row
-    for row in (single, array):
+    for row in (single, array, flipped):
         assert row["Ax"].p + row["Bx"].p == 1.0
         assert row["Ay"].p + row["By"].p == 1.0
 

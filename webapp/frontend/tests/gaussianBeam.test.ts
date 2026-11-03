@@ -40,6 +40,41 @@ describe('renderXY', () => {
     expect(grid.y0 + (j * 16) / 320).toBeCloseTo(-1.1, 1)
     expect(rgb[best * 3]).toBeCloseTo(1, 6) // red channel of a Z = 0 (white) spot at full scale
   })
+  it('adds coincident spots in intensity before the gamma (a hand-over looks like one trap)', () => {
+    const one: SpotLike = { x_um: 1.3, y_um: 0.4, z_um: 1.5, delta_f_um: 0.2, power: 1 }
+    const halves: SpotLike[] = [
+      { ...one, power: 0.5 },
+      { ...one, power: 0.5 },
+    ]
+    const peak = 0.8 * spotPeak(one, 0.5, w0, zR) // saturating centre on purpose
+    const a = renderXY([one], grid, 0.5, w0, zR, peak, 3)
+    const b = renderXY(halves, grid, 0.5, w0, zR, peak, 3)
+    let worst = 0
+    for (let p = 0; p < a.length; p++) worst = Math.max(worst, Math.abs(a[p] - b[p]))
+    expect(worst).toBeLessThan(1e-6)
+    // the frame peak of the two halves equals that of the full trap
+    const fr = (ps: number[]): SpotFrame => ({
+      x_um: ps.map(() => 1.3), y_um: ps.map(() => 0.4), z_um: ps.map(() => 1.5), delta_f_um: ps.map(() => 0.2), sigma_astig: ps.map(() => 0),
+      wx_um: ps.map(() => w0), wy_um: ps.map(() => w0), power: ps, power_coherent: ps, df_opt_MHz: ps.map(() => 0), group: ps.map((_, i) => i), n_terms: ps.map(() => 1),
+    })
+    expect(peakNormalization([fr([0.5, 0.5])], [0.5], w0, zR)).toBeCloseTo(peakNormalization([fr([1])], [0.5], w0, zR), 12)
+  })
+  it('leaves distinct spots unchanged (each renders as it would alone)', () => {
+    const peak = Math.max(...spots.map((s) => spotPeak(s, 0, w0, zR)))
+    const both = renderXY(spots, grid, 0, w0, zR, peak, 3)
+    for (const s of spots) {
+      const alone = renderXY([s], grid, 0, w0, zR, peak, 3)
+      const i = Math.round(((s.x_um - grid.x0) / 20) * 400)
+      const j = Math.round(((s.y_um - grid.y0) / 16) * 320)
+      // the 4-waist patches of the two spots do not overlap: identical within each patch
+      for (let dj = -8; dj <= 8; dj++) {
+        for (let di = -8; di <= 8; di++) {
+          const p = ((j + dj) * grid.nx + i + di) * 3
+          for (let c = 0; c < 3; c++) expect(Math.abs(both[p + c] - alone[p + c])).toBeLessThan(1e-6)
+        }
+      }
+    }
+  })
   it('integrates to the spot power within 2 % on a fine grid', () => {
     const one = [spots[0]]
     const total = integrateXY(one, grid, 0, w0, zR)
@@ -69,8 +104,26 @@ describe('peakNormalization / renderXZ', () => {
     const expected = Math.max(spotPeak(s[0], 0, w0, zR), spotPeak(s[1], 0, w0, zR), spotPeak(s[0], 1, w0, zR), spotPeak(s[1], 1, w0, zR))
     expect(n).toBeCloseTo(expected, 12)
     // a fading hand-over: the dying and rising rung pairs sit on the same trap and sum
-    const handover: SpotFrame = { ...frame, x_um: [0, 0.05], y_um: [0, 0], z_um: [0, 0], power: [0.5, 0.5], power_coherent: [0.5, 0.5] }
-    expect(peakNormalization([handover], [0], w0, zR)).toBeCloseTo(spotPeak({ x_um: 0, y_um: 0, z_um: 0, delta_f_um: 0, power: 1 }, 0, w0, zR), 9)
+    const handover: SpotFrame = { ...frame, x_um: [0, 0], y_um: [0, 0], z_um: [0, 0], power: [0.5, 0.5], power_coherent: [0.5, 0.5] }
+    expect(peakNormalization([handover], [0], w0, zR)).toBeCloseTo(spotPeak({ x_um: 0, y_um: 0, z_um: 0, delta_f_um: 0, power: 1 }, 0, w0, zR), 12)
+  })
+  it('is the maximum of the merged intensity for partly overlapping spots', () => {
+    const near: SpotFrame = { ...frame, x_um: [0, 0.8], y_um: [0, 0.3], z_um: [0, 0.5], delta_f_um: [0, 0.4], power: [1, 0.7], power_coherent: [1, 0.7] }
+    const s = frameSpots(near)
+    let brute = 0
+    for (let i = -400; i <= 400; i++) {
+      for (let j = -300; j <= 300; j++) {
+        const x = i * 0.0025
+        const y = j * 0.0025
+        let I = 0
+        for (const q of s) {
+          const [wx, wy] = spotRadii(q, 0.2, w0, zR)
+          I += spotPeak(q, 0.2, w0, zR) * Math.exp(-2 * ((x - q.x_um) ** 2 / wx ** 2 + (y - q.y_um) ** 2 / wy ** 2))
+        }
+        brute = Math.max(brute, I)
+      }
+    }
+    expect(Math.abs(peakNormalization([near], [0.2], w0, zR) / brute - 1)).toBeLessThan(1e-5)
   })
   it('renderXZ peaks at the spot focus row', () => {
     const spots = frameSpots(frame).slice(0, 1)

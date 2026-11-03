@@ -228,14 +228,19 @@ def test_the_report_notes_the_caveats_that_apply_to_this_drive(params1030):
 
     fading = plan_motion(SLOW_STORY, params).report
     assert any("shadow tweezers" in note for note in fading.notes)
-    assert any("x: 10 + 1 columns at every instant" in note for note in fading.notes)
-    assert any("y: 10 + 1 rows at every instant" in note for note in fading.notes)
-    assert any("comb offset" in note for note in fading.notes)
+    # one rule for both parities: M + 2 during a hand-over, M otherwise
+    assert any("x: 10 + 2 columns during a hand-over, 10 otherwise" in n for n in fading.notes)
+    assert any("y: 10 + 2 rows during a hand-over, 10 otherwise" in n for n in fading.notes)
+    assert not any("at every instant" in note for note in fading.notes)
+    assert any("offset by half a rung" in note for note in fading.notes)  # even M: xi_B
+    assert not any("comb offset" in note for note in fading.notes)
     assert any("-40 dB" in note for note in fading.notes)
 
     ramped = plan_motion(SLOW_STORY, params, switch_ramp=3.0 * us).report
     assert not any("-40 dB" in note for note in ramped.notes)
     assert any("switch_ramp" in note for note in ramped.notes)
+    # an even-M rung now switches at an A hand-over, so the edge columns pay (both ladders)
+    assert any("x and y ladders' two edge columns dip" in note for note in ramped.notes)
 
     compensated = plan_motion(STATIC, params, retard_compensate=True).report
     assert any("retard_compensate=True" in note for note in compensated.notes)

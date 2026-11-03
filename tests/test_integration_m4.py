@@ -285,7 +285,8 @@ def test_shadows_at_plus_minus_delta_f_only_while_a_pair_hands_over(params1030):
     assert rays == {4, 16}
 
 
-def test_the_array_grid_grows_two_columns_that_switch_on_at_full_brightness(params1030):
+@pytest.mark.parametrize("m", [3, 4], ids=["3x3", "4x4"])
+def test_the_array_grid_grows_two_columns_that_switch_on_at_full_brightness(params1030, m):
     """Table II's array row: ``(Mx + 2) x My`` during an x-fade, interior columns rock steady.
 
     ``p_B = 0`` makes the ``B`` ladder a rectangle — it *is* the array ladder, and shaping it
@@ -294,35 +295,43 @@ def test_the_array_grid_grows_two_columns_that_switch_on_at_full_brightness(para
     the outermost combinations have one feeder each, and because the ``B`` rectangle switches
     a rung on discontinuously, the new column *appears* at full brightness instead of fading
     up.  That is the scheduling caveat: a pick-up must not be timed inside a fade zone.
+
+    The same rule for both parities: an even ``M`` sits on Eq. S19's half-integer lattice and,
+    with :func:`~aodl.waveform.shepard.table_ii`'s half-rung ``xi_B``, hands over exactly like
+    an odd one — ``M`` columns on the plateau, ``M + 2`` during a hand-over, never ``M + 1``.
     """
     params = _linear(params1030)
     optics = params.optics
     tau = params.channels["Ax"].transit_time
     delta_f = 1.0 * MHz
     spec = TrajectorySpec(
-        array=ArraySpec(3, 3, delta_f, delta_f),
+        array=ArraySpec(m, m, delta_f, delta_f),
         moves=(Lift(6.0 * um, 60.0 * us), Hold(150.0 * us), Lift(-6.0 * um, 60.0 * us)),
     )
     wfs = synthesize(spec, params, shepard=ShepardConfig(delta_f, delta_f))
     pitch = params.deflection_scale * delta_f
+    # node 0 is the first requested site, (n - (M-1)/2) pitch with n = 0 (Eq. S19)
+    first = -0.5 * (m - 1) * pitch
+    requested = set(range(m))
+    grown = set(range(-1, m + 1))
 
     widths, brightest_extra = set(), 0.0
     for t in np.linspace(tau, spec.duration, 120):
-        nodes, residual = _lattice(build_terms(wfs, float(t)), optics, (0.0, 0.0), (pitch, pitch))
+        nodes, residual = _lattice(build_terms(wfs, float(t)), optics, (first, first), (pitch, pitch))
         assert residual < 0.01 * optics.waist0
         columns = {i for i, _ in nodes}
         rows = {j for _, j in nodes}
-        assert columns <= {-2, -1, 0, 1, 2} and {-1, 0, 1} <= columns
-        assert rows <= {-2, -1, 0, 1, 2} and {-1, 0, 1} <= rows
+        assert columns <= grown and requested <= columns
+        assert rows <= grown and requested <= rows
         widths.add(len(columns))
         reference = max(nodes.values())
-        interior = [nodes[(i, j)] / reference for i in (-1, 0, 1) for j in (-1, 0, 1)]
+        interior = [nodes[(i, j)] / reference for i in requested for j in requested]
         np.testing.assert_allclose(interior, 1.0, rtol=1e-12)
-        extra = [nodes.get((i, 0), 0.0) / reference for i in (-2, 2)]
-        assert sum(extra) == pytest.approx(0.0 if len(columns) == 3 else 1.0, abs=1e-9)
+        extra = [nodes.get((i, 1), 0.0) / reference for i in (-1, m)]
+        assert sum(extra) == pytest.approx(0.0 if len(columns) == m else 1.0, abs=1e-9)
         brightest_extra = max(brightest_extra, max(extra))
 
-    assert widths == {3, 5}  # (Mx + 2) x My, and only while a pair hands over
+    assert widths == {m, m + 2}  # (Mx + 2) x My, and only while a pair hands over
     assert brightest_extra > 0.99  # ... switched on at full brightness, not faded up
 
 
@@ -411,9 +420,9 @@ def test_the_unhurried_user_story_synthesizes_tracks_and_stays_in_band(params103
 
     pitch = spec.array.pitch(params)
     # Eq. S19 centres an M-tone ladder, so an *even* M lands on half-integer multiples of the
-    # pitch, and WO-17 §2.1's comb offset puts the Shepard columns there too: the lattice the
+    # pitch, and table_ii's half-rung xi_B puts the Shepard columns there too: the lattice the
     # nodes live on is half a pitch off the array centre itself.  Anchoring `_lattice` on that
-    # lattice keeps the ten programmed columns at the same indices as before the correction.
+    # lattice keeps the ten programmed columns at indices -4..5.
     half = tuple(
         0.5 * p if m % 2 == 0 else 0.0 for p, m in zip(pitch, (STORY_ARRAY.mx, STORY_ARRAY.my))
     )
@@ -455,7 +464,7 @@ def test_the_user_story_renders_a_frame_of_a_hundred_traps(params1030):
     optics = params.optics
     tau = params.channels["Ax"].transit_time
     spec = TrajectorySpec(array=STORY_ARRAY, moves=STORY_MOVES)
-    _, _, z = spec.compile()
+    x, y, z = spec.compile()
     wfs = synthesize(spec, params, shepard="auto")
 
     t = 300.0 * us
@@ -472,17 +481,16 @@ def test_the_user_story_renders_a_frame_of_a_hundred_traps(params1030):
     grid = FrameGrid(mid_x - half_x, mid_x + half_x, 321, mid_y - half_y, mid_y + half_y, 321)
     frame = result.frame(0, grid)
 
-    # The brightest pixels sit on the lattice the metrics predict, at the tracked plane.
+    # The brightest pixels sit on Eq. S19's lattice, (n - (M-1)/2) pitch about the requested
+    # centre, at the tracked plane — half-integer multiples for this even-M array.
     peak = float(frame.max())
     assert peak > 0.0
     rows, cols = np.nonzero(frame > 0.5 * peak)
-    lit_x, lit_y = grid.x[cols], grid.y[rows]
-    assert np.max(np.abs(np.round((lit_x - mid_x) / pitch_x) * pitch_x - (lit_x - mid_x))) < (
-        2.0 * optics.waist0
-    )
-    assert np.max(np.abs(np.round((lit_y - mid_y) / pitch_y) * pitch_y - (lit_y - mid_y))) < (
-        2.0 * optics.waist0
-    )
+    t_c = t - 0.5 * tau
+    lit_x = grid.x[cols] - (float(x(t_c)) - 0.5 * (spec.array.mx - 1) * pitch_x)
+    lit_y = grid.y[rows] - (float(y(t_c)) - 0.5 * (spec.array.my - 1) * pitch_y)
+    assert np.max(np.abs(np.round(lit_x / pitch_x) * pitch_x - lit_x)) < 2.0 * optics.waist0
+    assert np.max(np.abs(np.round(lit_y / pitch_y) * pitch_y - lit_y)) < 2.0 * optics.waist0
     # ... and the same frame is dark far outside the array.
     edge = intensity_frame(result.terms(0), optics, grid, plane)[0, 0]
     assert edge < 1e-6 * peak

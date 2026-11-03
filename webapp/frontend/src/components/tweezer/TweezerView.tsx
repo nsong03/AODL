@@ -3,6 +3,8 @@ import { fmt } from '../../physics/format'
 import { brightest, dedupeFades, offCanvas, requestedAt, spotRow, spotsAt } from '../../physics/spots'
 import { useStudio } from '../../state/store'
 import { Panel, Skeleton } from '../common/Panel'
+import { simTrapDepths } from '../intensity/depthCache'
+import { LineCuts } from '../intensity/LineCuts'
 import { ColorBar } from './ColorBar'
 import { ExactXy, ExactXz } from './ExactFrame'
 import { IsoView } from './IsoView'
@@ -151,6 +153,9 @@ export function TweezerView() {
             {showExact && exactFrame && (
               <div className="view-cell">
                 <ExactXz frame={exactFrame} scale={scale} peak={peak} />
+                <div style={{ marginTop: 6 }}>
+                  <LineCuts frame={exactFrame} plateau={simTrapDepths(sim).plateau} w0={scale.w0} zR={scale.zR} compact />
+                </div>
               </div>
             )}
           </div>

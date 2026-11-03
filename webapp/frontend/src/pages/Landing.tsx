@@ -25,8 +25,10 @@ export default function Landing() {
           </div>
         </div>
         <div className="caption">
-          <strong className="bright">How to read the diagram.</strong> The beam crosses four tellurium-dioxide crystals whose acoustic axes
-          alternate x, x, y, y in counter-propagating pairs. A tone at frequency <code>f</code> deflects by <code>λ f / v</code>; a chirp{' '}
+          <strong className="bright">How to read the diagram.</strong> The beam crosses four tellurium-dioxide crystals: a first 2D deflector (Ax
+          then Ay, crossed x and y), a 4f relay that images the A plane onto the B plane with magnification −1, and a second 2D deflector (Bx then
+          By). The relay superposes all four apertures, and in that common pupil frame Ax and Bx counter-propagate along x (sound −x, +x), Ay and
+          By along y (−y, +y). A tone at frequency <code>f</code> deflects by <code>λ f / v</code>; a chirp{' '}
           <code>ḟ</code> adds a cylindrical lens. The sample illuminating the beam centre left its transducer <code>τ/2 = D/2v</code> earlier
           (5.8 µs at the default hardware), so the atom plane lags the drive — AODL Studio shows that lag rather than hiding it.
         </div>

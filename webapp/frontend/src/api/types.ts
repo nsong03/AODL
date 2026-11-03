@@ -337,9 +337,17 @@ export interface ImageXZ {
   row_y_um: number
   image: PackedImage
 }
+/**
+ * API.md §5.2 — closed-form (Eq. S11) line cuts through the frame's brightest spot, on the
+ * packed-image scale (SI `intensity_frame`, per m²). `i_x` is the XY row nearest `through.y`,
+ * `i_y` the XY column nearest `through.x` (on `y_um`, else on `xy.y_um`), `i_z` an exact axial
+ * cut at `through` over `z_um`. `i_y` / `y_um` arrived in round 2: an older backend omits them.
+ */
 export interface Cuts {
   x_um: number[]
   i_x: number[]
+  y_um?: number[]
+  i_y?: number[]
   z_um: number[]
   i_z: number[]
   through: { x_um: number; y_um: number }
@@ -352,6 +360,10 @@ export interface FrameResponse {
   xy: ImageXY
   xz: ImageXZ | null
   cuts: Cuts
+  /** astigmatic-Gaussian peak `2P/(π w_x w_y)` summed over the spots coincident with the brightest one [per m², like `PackedImage.peak`] (round 2) */
+  gauss_peak?: number
+  /** max of the XY image [per m²] (round 2) */
+  exact_peak?: number
   spots: Spot[]
 }
 

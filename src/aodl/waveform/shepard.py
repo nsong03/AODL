@@ -93,13 +93,17 @@ always a single-axis ``+-Delta f`` pair rather than the sixteen-ray grid that si
 fading would produce (``docs/PLAN.md`` §1.3).  Shadows never vanish entirely — with
 ``eta = 1/2`` some axis is always fading — they simply never appear on both axes at once.
 
-**Where the traps land, and the comb offset.**  A tweezer's position depends on the index
-*difference* between the ``A`` and ``B`` lines feeding it (Table I), so a Shepard array sits
-on the lattice ``X(t) + d * deflection_scale * Delta f``, ``d`` integer — while Eq. S19 puts
-an ``M``-tone ladder at ``(n - (M-1)/2) Delta f``, i.e. on *half-integer* multiples when
-``M`` is even.  :func:`lattice_comb_offset` closes that half-pitch gap by adding a constant
-``Delta f / 2`` to the even-``M`` ``B`` ladders' **frequencies only**, leaving ``g``, the
-windows and the schedule alone (:func:`shepard_ladder`).
+**Where the traps land, and the comb offset.**  A tweezer's position depends on the
+difference ``(b + xi_B) - (a + xi_A)`` between the ``A`` and ``B`` lines feeding it (Table I),
+so a Shepard array sits on the lattice ``X(t) + (d + xi_B - xi_A) deflection_scale Delta f``,
+``d`` integer — while Eq. S19 puts an ``M``-tone ladder at ``(n - (M-1)/2) Delta f``, i.e. on
+*half-integer* multiples when ``M`` is even.  :func:`table_ii` gives an even-``M`` ``B``
+ladder ``xi_B = xi_A + 1/2``, which lands it on that lattice *and* puts its ``M + 1``-rung
+phase on the ``A`` hand-over, so every requested site is fed by both live ``A`` rungs (the
+phase argument is in :func:`table_ii`).  The frequency-only comb offset that WO-17 used
+instead moved the lattice without moving the window timing and left one requested column
+dark per hand-over; :func:`lattice_comb_offset` is now identically ``0``, and an explicit
+:attr:`ShepardConfig.comb_offset` is the only way to get a non-zero one.
 
 All frequencies here are **detunings** from ``f_center`` (Eq. S2 rotating frame,
 ``docs/conventions.md`` §1), and every quantity is SI.
@@ -155,8 +159,8 @@ _ROOT_TRIM = 1e-12
 
 #: Peak of ``x^2 (1 - sin^4(pi x / 2))`` on ``x`` in ``[0, 1]`` (at ``x = 0.5959``) — the shape
 #: factor of the *edge*-column flatness cost a :class:`SwitchRamped` rectangle pays on an
-#: odd-``M`` ladder (an even-``M`` one pays nothing, and no interior column ever pays).  See
-#: that class' ``Note``; ``tests/test_synthesis_options.py`` re-derives it numerically.
+#: ``M``-column ladder of either parity (no interior column ever pays).  See that class'
+#: ``Note``; ``tests/test_synthesis_options.py`` re-derives it numerically.
 SWITCH_FLATNESS_SHAPE = 0.20582
 
 _TWO_PI = 2.0 * math.pi
@@ -564,25 +568,24 @@ class SwitchRamped:
        ``p_A + p_B = 1`` needs the ``B`` rectangle to be **flat** wherever the ``A`` window is
        fading, so a ramp can only be felt by the columns its own rung feeds *while the ``A``
        ladder is handing over*.  The ``A`` window's outer boundary sits ``(M - 1) / 2`` rung
-       spacings inside the rectangle's, so which columns those are is decided by the parity of
-       ``M`` (write ``rho_r = |gdot| r / Delta f``, the fraction of a rung spacing the ladder
-       slides during one ramp, and take ``rho_r < 1/2``):
+       spacings inside the rectangle's, and :func:`table_ii`'s half-rung ``xi_B`` on an
+       even-``M`` axis makes that a whole number of half-rungs for **both parities**: every
+       ``B`` rung switches at an ``A`` hand-over, and the rung entering at ``t_on`` is precisely
+       the partner of the ``A`` rung entering there.  (Write ``rho_r = |gdot| r / Delta f``,
+       the fraction of a rung spacing the ladder slides during one ramp, and take
+       ``rho_r < 1/2``.)  The array's two **edge** columns then read
+       ``cos^2 theta + sin^2 theta * s^2`` instead of ``1``, while the ``M - 2`` columns inside
+       them stay exactly flat.  The dying weight is ``sin^2(pi gdot (t - t_on) / Delta f)``, so
+       the worst dip is
 
-       * **even ``M``** — the rung switches half-way between two ``A`` hand-overs, i.e. with a
-         single ``A`` rung live at unit weight.  It therefore feeds exactly one column, the
-         extended one it is arriving at or leaving, and **every column of the array stays
-         exactly flat**;
-       * **odd ``M``** — the rung switches at an ``A`` hand-over, and the rung entering at
-         ``t_on`` is precisely the partner of the ``A`` rung entering there.  The array's two
-         **edge** columns then read ``cos^2 theta + sin^2 theta * s^2`` instead of ``1``, while
-         the ``M - 2`` columns inside them stay exactly flat.  The dying weight is
-         ``sin^2(pi gdot (t - t_on) / Delta f)``, so the worst dip is
+           ``max_x sin^2(pi rho_r x) (1 - sin^4(pi x / 2))  <=  (pi rho_r)^2 *``
+           :data:`SWITCH_FLATNESS_SHAPE`
 
-             ``max_x sin^2(pi rho_r x) (1 - sin^4(pi x / 2))  <=  (pi rho_r)^2 *``
-             :data:`SWITCH_FLATNESS_SHAPE`
-
-         — 0.5 % at ``rho_r = 0.05``, 1.54 % at ``rho_r = 0.087``, 20 % at ``rho_r = 0.34``.
-         ``tests/test_synthesis_options.py`` measures that law to five digits.
+       — 0.5 % at ``rho_r = 0.05``, 1.54 % at ``rho_r = 0.087``, 20 % at ``rho_r = 0.34``, for
+       ``M = 3`` and ``M = 4`` alike.  ``tests/test_synthesis_options.py`` measures that law to
+       five digits on both parities.  (Under the WO-17 even-``M`` timing, ``xi_B = xi_A`` plus a
+       frequency-only comb, an even-``M`` rung switched mid-plateau and paid nothing — but that
+       is the same misphasing that let a requested column go dark at every hand-over.)
 
        Either way the extended column, which had no continuity at all, gains it in exchange.
 
@@ -771,7 +774,7 @@ class ChannelFade:
 
 
 def table_ii(array: ArraySpec) -> dict[str, ChannelFade]:
-    """Paper Table II for ``array``: ``{channel: ChannelFade}``, decided per axis.
+    r"""Paper Table II for ``array``: ``{channel: ChannelFade}``, decided per axis.  Eqs. S25-S27.
 
     An axis carrying a single tweezer (``m = 1``) takes the single-tweezer row — the fade is
     split evenly, ``p_A = p_B = 1/2`` — and an axis carrying a ladder takes the array row,
@@ -779,6 +782,32 @@ def table_ii(array: ArraySpec) -> dict[str, ChannelFade]:
     ``A`` channel does all the fading (``p = 1``).  A mixed spec (``1 x My``, say) therefore
     gets the single-tweezer row on x and the array row on y, which is the only reading that
     reduces to Table II on both pure cases.
+
+    **Even ``M``: the ``B`` ladder sits half a rung off the ``A`` one**, ``xi_B = xi_A + 1/2``
+    (odd ``M`` and the single-tweezer row keep ``xi_B = xi_A``).  Rung ``n`` of either ladder
+    has fade coordinate ``g_n = f_Z + (n + xi) Delta f`` (Eq. S25).  The ``A`` window (Eq.
+    S26, ``m = 1``) is handing over — two rungs live — while the fractional part of
+    ``g / Delta f`` lies within ``eta / 2`` of ``1/2``; the ``B`` rectangle (Eq. S27, ``p = 0``,
+    half-width ``(M + eta) Delta f / 2``) holds ``M + 1`` rungs while the fractional part of
+    ``g / Delta f + (M + eta) / 2`` is below ``eta`` and ``M`` otherwise — the same test with
+    ``M = 1`` is the ``A`` hand-over.  With a common ``xi`` the two phases are therefore set by
+    ``(1 + eta) / 2`` and ``(M + eta) / 2``: for odd ``M`` these share their
+    fractional part, so ``B``'s ``M + 1``-rung phase coincides with ``A``'s hand-over, and for
+    even ``M`` they differ by exactly ``1/2``, so ``B`` holds only ``M`` rungs *during* the
+    hand-over.  The sites fed by the dying ``A`` rung are then ``{b - a}`` and those fed by the
+    rising one the same set shifted one pitch: the lit block walks, and the requested edge
+    column fades to ``cos^2 theta -> 0`` before ``B``'s next rung switches on a quarter cycle
+    later.  The half-rung ``xi_B`` restores the odd-``M`` phase relation.
+
+    The invariant this buys, for both parities: **both live ``A`` rungs of a hand-over see the
+    same ``M + 1`` ``B`` rungs**, so the ``M`` requested sites are each fed by both and get
+    ``cos^2 theta + sin^2 theta = 1`` (the ``p_A + p_B = 1`` identity of the module
+    docstring), and the two outer ones are the hard-switched edge columns of
+    ``docs/guide.md`` §6.7.  The same half rung puts the traps at index differences
+    ``(b + xi_B) - (a + xi_A) = b - a + 1/2``, which is Eq. S19's half-integer even-``M``
+    lattice — so no frequency-only comb offset is needed (:func:`lattice_comb_offset`).
+    Interlacing between the axes (``xi_Ax = 0``, ``xi_Ay = 1/2``) is set by the ``A`` windows
+    and is untouched.
     """
     fades: dict[str, ChannelFade] = {}
     for a_name, b_name, count, xi in (
@@ -789,45 +818,35 @@ def table_ii(array: ArraySpec) -> dict[str, ChannelFade]:
             fades[a_name] = ChannelFade(m=1, p=0.5, xi=xi)
             fades[b_name] = ChannelFade(m=1, p=0.5, xi=xi)
         else:
+            xi_b = xi + 0.5 if count % 2 == 0 else xi
             fades[a_name] = ChannelFade(m=1, p=1.0, xi=xi)
-            fades[b_name] = ChannelFade(m=count, p=0.0, xi=xi)
+            fades[b_name] = ChannelFade(m=count, p=0.0, xi=xi_b)
     return fades
 
 
 def lattice_comb_offset(fade: ChannelFade, delta_f: float) -> float:
-    r"""The constant a ``B`` ladder's *frequencies* take so its traps land on Eq. S19's lattice.
+    r"""The constant a ``B`` ladder's *frequencies* take on top of Table II: ``0``, always.
 
-    ``delta_f / 2`` for an even-``M`` ladder, ``0`` for an odd one.
+    A tweezer's lateral position is ``deflection_scale (f_B - f_A)`` (Table I), and Eq. S19
+    centres a counted ladder at ``(n - (M-1)/2) Delta f`` — half-integer multiples of the pitch
+    when ``M`` is even.  That half pitch now comes from :func:`table_ii`'s ``xi_B = xi_A + 1/2``
+    on an even-``M`` axis, which puts the index differences at ``b - a + 1/2`` by itself, so
+    nothing is left for a frequency-only offset to do and ``fade`` and ``delta_f`` no longer
+    matter.
 
-    A tweezer's lateral position is ``deflection_scale (f_B - f_A)`` (Table I), and both
-    frequencies carry the same ``f_Z``, so a Shepard array's columns sit at the *index
-    differences* ``b - a``: integer multiples of the pitch about the array centre.  Eq. S19
-    instead centres a counted ladder, ``f^{(n)} = (n - (M-1)/2) Delta f``, which is
-    half-integer multiples when ``M`` is even — so ``shepard="auto"`` used to move an even-``M``
-    user array by half a pitch (WO-16 finding F-2).  Adding ``Delta f / 2`` to every ``B`` rung
-    *frequency* closes that gap.
+    **Why the WO-17 offset was not enough.**  It added ``Delta f / 2`` to the even-``M`` ``B``
+    rung frequencies and *not* to their fade coordinate ``g`` (Eq. S25): that moved the lattice
+    onto Eq. S19's sites but left the ``B`` window timing where a common ``xi`` puts it, half a
+    rung out of phase with the ``A`` hand-overs.  During every hand-over the ``B`` rectangle
+    then held ``M`` rungs instead of ``M + 1``, the lit block walked by one pitch, and one
+    requested column went dark (``docs/guide.md`` §6.7; :func:`table_ii` has the phase
+    argument).  Moving ``xi_B`` moves the frequency *and* the window, which is the difference.
 
-    **Why the frequency and not ``g``.**  Nothing ties the fade coordinate ``g = f_Z + (n + xi)
-    Delta f`` of Eq. S25 to the frequency offset: the schedule only has to hand a rung over to
-    its neighbour as ``f_Z`` advances by ``Delta f``, which depends on ``g`` alone.  Leaving
-    ``g``, the windows, the duty and the ``A`` channels untouched therefore preserves *every*
-    structural property the scheme rests on:
-
-    * **co-location** — which ``(a, b)`` combinations share a trap depends on ``b - a``, and a
-      constant common to all ``b`` cannot change a difference of two of them.  The
-      ``p_A + p_B = 1`` constant-power identity is a statement about those pairs, so it holds
-      verbatim;
-    * **degeneracy** — every emission line of the channel, fundamental or IM3 (``f_j + f_k -
-      f_i``, ``2 f_j - f_i``: unit coefficient sums), shifts by exactly the same constant, so
-      all ``df_opt`` differences — and hence :func:`aodl.field.focal.group_terms` — are
-      unchanged;
-    * **the band bound** — the live window moves bodily with the comb, which is why
-      :func:`shepard_band_bound` simply gains ``|comb_offset|``.
-
-    The whole trap pattern (shadows and ghosts included) translates rigidly by half a pitch,
-    which is exactly the correction wanted.
+    Kept, with :attr:`ShepardConfig.comb_offset`, so saved configurations and the API keep
+    working: an explicit mapping is still honoured verbatim, and ``"auto"`` resolves to this.
     """
-    return 0.5 * float(delta_f) if fade.m % 2 == 0 else 0.0
+    del fade, delta_f  # the half pitch lives in table_ii's xi_B now
+    return 0.0
 
 
 @dataclass(frozen=True)
@@ -849,9 +868,11 @@ class ShepardConfig:
         comparison sets ``xi_y = 0``).
     comb_offset:
         Constant added to a channel's rung *frequencies* only (never to its fade coordinate).
-        ``"auto"`` (default) applies :func:`lattice_comb_offset` to the two ``B`` ladders, which
-        is what makes an even-``M`` Shepard array land on the same lattice as Eq. S19; a mapping
-        ``{channel: offset [Hz]}`` sets it by hand (``{}`` reproduces the pre-M5 behaviour).
+        ``"auto"`` (default) applies :func:`lattice_comb_offset`, which is now ``0`` on every
+        channel — an even-``M`` array reaches Eq. S19's lattice through :func:`table_ii`'s
+        ``xi_B`` instead; a mapping ``{channel: offset [Hz]}`` sets it by hand and is honoured
+        verbatim (the WO-17 timing is ``config={B: ChannelFade(M, 0, xi_A)}`` with
+        ``comb_offset={B: delta_f / 2}``).
     switch_ramp:
         Raised-cosine on/off ramp [s] applied to the ``p = 0`` (rectangular) rungs and to no
         others, anchored at their own switching instants — :class:`SwitchRamped`, the
@@ -957,9 +978,10 @@ class ShepardConfig:
         """``{channel: frequency-only offset [Hz]}`` for the resolved ``fades``.
 
         ``"auto"`` gives the ``A`` channels ``0`` and each ``B`` ladder
-        :func:`lattice_comb_offset` — the half-pitch correction that puts an even-``M`` array on
-        Eq. S19's lattice.  An explicit mapping is taken as given, with ``0`` for any channel it
-        omits, so ``comb_offset={}`` is the pre-M5 (uncorrected) comb.
+        :func:`lattice_comb_offset`, which is ``0``: the half pitch an even-``M`` array needs
+        to sit on Eq. S19's lattice is carried by :func:`table_ii`'s ``xi_B``, not by the
+        frequencies.  An explicit mapping is taken as given, with ``0`` for any channel it
+        omits (so ``comb_offset={}`` is now the same drive as ``"auto"``).
         """
         if isinstance(self.comb_offset, Mapping):
             return {name: float(self.comb_offset.get(name, 0.0)) for name in CHANNELS}
@@ -1065,9 +1087,10 @@ def shepard_band_bound(
     live window does not.  (The frequency *laws* of individual rungs are unbounded; they are
     simply multiplied by zero outside the window, and never launched by the transducer.)
 
-    The last term is :func:`lattice_comb_offset`'s half-pitch lattice correction, which
-    translates the live window bodily and so costs its own magnitude — ``delta_f / 2`` at worst,
-    and nothing at all for an odd-``M`` or single-tweezer axis.
+    The last term is an explicit :attr:`ShepardConfig.comb_offset`, which translates the live
+    window bodily and so costs its own magnitude.  It is normally ``0``: :func:`table_ii` puts
+    an even-``M`` ladder on Eq. S19's lattice through ``xi_B``, which lives inside ``g`` and so
+    moves the window with the rungs, leaving the bound at the window plus the lateral term.
     """
     return 0.5 * (fade.m + eta) * delta_f + abs(lateral_span) + abs(comb_offset)
 
@@ -1177,7 +1200,8 @@ def shepard_ladder(
 
     and whose envelope is the :class:`FadeZoneEnvelope` on ``g^{(n)} = f_Z + (n + xi)
     delta_f`` — the same polynomial minus the lateral term *and minus the comb offset*, which
-    is why neither a lateral move nor the lattice correction shifts the fade schedule.
+    is why neither a lateral move nor an explicit comb offset shifts the fade schedule (and why
+    a lattice correction has to go through ``xi`` if it is meant to move the windows too).
 
     Parameters
     ----------
@@ -1193,8 +1217,9 @@ def shepard_ladder(
         Fade duty, peak amplitude, and the ladder's phase convention — ``"schroeder"``
         (Eq. S28 by rung index), ``"zero"``, ``"random"`` or an explicit per-rung array.
     comb_offset:
-        Constant [Hz] added to the rung frequencies and to nothing else
-        (:func:`lattice_comb_offset`): the whole comb translates, the schedule does not move.
+        Constant [Hz] added to the rung frequencies and to nothing else: the whole comb
+        translates, the schedule does not move.  ``0`` from the ``"auto"`` path
+        (:func:`lattice_comb_offset`); only an explicit :attr:`ShepardConfig.comb_offset` sets it.
     switch_ramp:
         Raised-cosine on/off ramp [s] wrapped around the windows of a ``p = 0``
         (rectangular) ladder and around nothing else (:class:`SwitchRamped`): a ``cos^p``
