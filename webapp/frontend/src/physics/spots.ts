@@ -111,6 +111,15 @@ export function offCanvas(spots: readonly SpotLike[], b: Bounds): SpotLike[] {
   return spots.filter((s) => s.x_um < b.x0 || s.x_um > b.x1 || s.y_um < b.y0 || s.y_um > b.y1)
 }
 
+/** Fade events deduplicated within `tol_us` (aodl's `fade_schedule` can list one instant twice at the 1e-16 level). */
+export function dedupeFades(events: readonly FadeEvent[], tol_us = 1e-3): FadeEvent[] {
+  const out: FadeEvent[] = []
+  for (const e of events) {
+    if (!out.some((o) => o.axis === e.axis && Math.abs(o.time_us - e.time_us) <= tol_us)) out.push(e)
+  }
+  return out
+}
+
 /** Fade events whose fade is in progress at drive time `t_c` (within ± half a transit of the hand-over). */
 export function activeFades(events: readonly FadeEvent[], t_c: number, halfWidth_us: number): FadeEvent[] {
   return events.filter((e) => Math.abs(e.time_us - t_c) <= halfWidth_us)

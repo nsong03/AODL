@@ -1,5 +1,6 @@
 import { useStudio } from '../../state/store'
 import { fmt } from '../../physics/format'
+import { dedupeFades } from '../../physics/spots'
 import { Panel, Skeleton } from '../common/Panel'
 import { BandUsage } from './BandUsage'
 
@@ -16,6 +17,7 @@ export function ReportCard() {
     )
   }
   const zb = plan.z_budget
+  const fades = dedupeFades(plan.fade_events)
   return (
     <Panel
       title="Report"
@@ -48,18 +50,18 @@ export function ReportCard() {
           τ = {fmt(plan.constants.tau_us, 2)} µs · atoms lag the drive by τ/2 = {fmt(plan.constants.half_tau_us, 2)} µs
         </dd>
       </dl>
-      {plan.fade_events.length > 0 && (
+      {fades.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <div className="small dim">
-            fade schedule — {plan.fade_events.length} hand-over{plan.fade_events.length === 1 ? '' : 's'} (shadow tweezers at ±(λF/v)·Δf mid-fade):
+            fade schedule — {fades.length} hand-over{fades.length === 1 ? '' : 's'} (shadow tweezers at ±(λF/v)·Δf mid-fade; click to jump to t = t_fade + τ/2):
           </div>
           <div className="row" style={{ gap: 4, marginTop: 4 }}>
-            {plan.fade_events.slice(0, 24).map((e, i) => (
+            {fades.slice(0, 24).map((e, i) => (
               <button key={i} className="badge" style={{ cursor: 'pointer' }} onClick={() => setTime(e.time_us + plan.constants.half_tau_us)} title={`jump the cursor to the hand-over as seen at the atoms (t = ${fmt(e.time_us, 1)} + τ/2 µs)`}>
                 {e.axis} @ {fmt(e.time_us, 1)} µs · ±{fmt(e.shadow_um, 1)} µm
               </button>
             ))}
-            {plan.fade_events.length > 24 && <span className="caption">+{plan.fade_events.length - 24} more</span>}
+            {fades.length > 24 && <span className="caption">+{fades.length - 24} more</span>}
           </div>
         </div>
       )}

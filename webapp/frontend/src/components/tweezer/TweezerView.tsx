@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react'
 import { fmt } from '../../physics/format'
-import { brightest, offCanvas, requestedAt, spotRow, spotsAt } from '../../physics/spots'
+import { brightest, dedupeFades, offCanvas, requestedAt, spotRow, spotsAt } from '../../physics/spots'
 import { useStudio } from '../../state/store'
 import { Panel, Skeleton } from '../common/Panel'
 import { ColorBar } from './ColorBar'
@@ -72,7 +72,7 @@ export function TweezerView() {
   const reqNow = requestedAt(plan.trajectory, t)
   const hidden = offCanvas(spots, scale.bounds)
   const tc = t - plan.constants.half_tau_us
-  const fades = plan.fade_events.filter((e) => Math.abs(e.time_us - tc) <= 0.6 * plan.constants.tau_us)
+  const fades = dedupeFades(plan.fade_events).filter((e) => Math.abs(e.time_us - tc) <= 0.6 * plan.constants.tau_us)
   const beforeHalfTau = t < plan.constants.half_tau_us
   const top = brightest(spots)
   const aspect = (scale.bounds.y1 - scale.bounds.y0) / (scale.bounds.x1 - scale.bounds.x0)
@@ -164,6 +164,18 @@ export function TweezerView() {
         Hue = each spot's own best-focus Z (RdBu, white at Z = 0); brightness = intensity on one global scale over the whole movie (a dimming spot looks
         dimmer). The approximation drops the aperture fill edge, acoustic irising and intra-cluster interference — compare with the exact frame.
       </div>
+      {sim.notes.length > 0 && (
+        <details style={{ marginTop: 4 }}>
+          <summary className="caption" style={{ cursor: 'pointer' }}>
+            simulate notes ({sim.notes.length})
+          </summary>
+          <ul className="notes">
+            {sim.notes.map((n, i) => (
+              <li key={i}>{n}</li>
+            ))}
+          </ul>
+        </details>
+      )}
       <div style={{ marginTop: 10 }}>
         <Playback />
       </div>

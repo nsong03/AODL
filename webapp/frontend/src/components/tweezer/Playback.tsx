@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { fmt, ticks } from '../../physics/format'
+import { dedupeFades } from '../../physics/spots'
 import { useStudio } from '../../state/store'
 import { makeScale, useElementWidth } from '../../hooks/useCanvas'
 
@@ -86,7 +87,7 @@ export function Playback() {
     }
     // fade events (as seen at the atoms: + τ/2)
     ctx.strokeStyle = 'rgba(255,183,3,0.9)'
-    for (const e of plan.fade_events) {
+    for (const e of dedupeFades(plan.fade_events)) {
       const x = sc.x(e.time_us + plan.constants.half_tau_us)
       ctx.beginPath()
       ctx.moveTo(x, sc.bottom - 8)

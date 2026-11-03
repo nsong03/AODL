@@ -24,6 +24,7 @@ import type {
   SpectrumResponse,
   TrajectoryEfficiencyResponse,
 } from '../api/types'
+import { spotRow, spotsAt } from '../physics/spots'
 import { DEFAULT_ARRAY, DEFAULT_HARDWARE, DEFAULT_MOVES, DEFAULT_OPTIONS, newMove } from './defaults'
 
 export type Status = 'idle' | 'loading' | 'ok' | 'error'
@@ -354,6 +355,10 @@ export const useStudio = create<StudioState>()((set, get) => {
       const ny = spanX >= spanY ? Math.max(16, Math.round((long * spanY) / spanX)) : long
       const zHalf = Math.max(Math.abs(b.z0), Math.abs(b.z1), 2 * sim.constants.rayleigh_um)
       const tClamped = Math.min(Math.max(t_us, sim.times_us[0] ?? 0), sim.times_us[sim.times_us.length - 1] ?? t_us)
+      // cut the exact XZ through the same tweezer row the approximation uses (the backend's own
+      // snap sees the uncut spot list, which can pick a ghost row of a fading ladder)
+      const atCursor = spotsAt(sim, tClamped).spots
+      const rowY = atCursor.length ? spotRow(atCursor) : null
       try {
         const frame = await api.frame(
           {
@@ -361,7 +366,7 @@ export const useStudio = create<StudioState>()((set, get) => {
             time_us: tClamped,
             plane: get().viewMode === 'tracked' ? 'tracked' : 'fixed',
             grid: { x0_um: b.x0, x1_um: b.x1, nx, y0_um: b.y0, y1_um: b.y1, ny },
-            xz: { nx: 128, nz: 72, z_half_um: zHalf, row_y_um: null },
+            xz: { nx: 128, nz: 72, z_half_um: zHalf, row_y_um: rowY },
             movie_mixing_order: null,
           },
           ctrl.signal,
