@@ -15,10 +15,15 @@ PLAN_CACHE_SIZE = 64
 #: Entries kept in the simulation LRU (one entry per ``(plan, times, mixing order)``).
 SIM_CACHE_SIZE = 32
 
-#: Frequency-group budget of the movie metrics: when the first frame (at ``t = 2 tau``) at the
+#: Frequency-group budget of the movie metrics: when the busiest probed frame
+#: (``planner.probe_times``: first lit frame, trajectory midpoint, first hand-over) at the
 #: requested mixing order holds more groups than this, the metrics fall back to order 1
-#: (DESIGN §1.2) unless the request pins the order with ``movie_mixing_order``.
-MOVIE_GROUP_BUDGET = 160
+#: (DESIGN §1.2) unless the request pins the order with ``movie_mixing_order``.  The number is
+#: a cost budget: a frame costs ~0.5 ms per frequency group, so 80 frames x 80 groups is ~3 s —
+#: the most the default movie should take.  A 3x3 at order 3 (49 groups: 9 traps + 40 IM3
+#: ghosts) stays at order 3; a fading 4x4 (150 groups between hand-overs, ~220 during one)
+#: and the 10x10 (~460) fall back.
+MOVIE_GROUP_BUDGET = 80
 
 #: Frame-count ceiling of ``/api/simulate`` (API.md §5.1).
 MAX_FRAMES = 240

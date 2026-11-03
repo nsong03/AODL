@@ -20,7 +20,8 @@ export function TutorialTweezer({ plan, sim, scale, peak }: { plan: PlanResponse
   const spots = frame.spots
   const planeZ = frame.tracked_z
   const half = plan.constants.half_tau_us
-  const reqNow = requestedAt(plan.trajectory, t - half)
+  // the request at the cursor time itself (as in the workbench): the simulated spot lags it by τ/2
+  const reqNow = requestedAt(plan.trajectory, t)
   const hidden = offCanvas(spots, scale.bounds)
   const fades = dedupeFades(plan.fade_events).filter((e) => Math.abs(e.time_us - (t - half)) <= 0.6 * plan.constants.tau_us)
   const top = brightest(spots)

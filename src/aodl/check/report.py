@@ -423,20 +423,21 @@ class CheckReport:
         frame and medians away, while a fault that holds still survives every median.
 
         **Report-only by default**, and here is why (WO-24 §1, measured on the ``docs/guide.md``
-        flagship at ``k_subtimes = 48`` over its seven :meth:`aodl.api.MotionPlan.check_times`):
+        flagship at ``k_subtimes = 48`` over its seven :meth:`aodl.api.MotionPlan.check_times`;
+        re-measured after the round-2 even-M ``xi_B`` fix, ``tests/test_check_flagship.py``):
 
         =========================================  ==========  ============
         drive                                      per-frame   time-median
         =========================================  ==========  ============
-        clean flagship                             0.213       0.137
-        one ``Bx`` rung scaled 0.80 (36 % of it)   0.280       0.137
+        clean flagship                             0.171       0.102
+        one ``Bx`` rung scaled 0.80                0.24        0.098
         =========================================  ==========  ============
 
         — no separation whatsoever, because a fading-Shepard rung fault does **not** hold
         still.  The ladder slides through the array (that is what Shepard means), so the
         corrupted rung feeds column 0 at the first frame, column 1 at the second and column 4
-        at the third, then leaves the band: a −0.3 excursion at one frame in seven, which any
-        median over seven frames erases.  What the clean 0.137 *is*, meanwhile, is real and
+        at the third, then leaves the band: a −0.24 excursion at one frame in seven, which any
+        median over seven frames erases.  What the clean 0.102 *is*, meanwhile, is real and
         persistent — the Eqs. S20-S22 intermodulation products land on lattice nodes at those
         nodes' own optical frequency and interfere permanently (:func:`_beat_comb`), so the
         IM3 pattern is exactly the kind of thing a time median keeps.
@@ -1598,9 +1599,9 @@ def _notes(
         notes.append(
             "uniformity_median (per-trap median over the frames) is measured but not gated: on "
             "the fading-Shepard drives this package ships the ladder slides, so a rung fault is "
-            "a one-frame excursion that any median erases (WO-24 §1; clean and 0.80-rung "
-            "flagships both median 0.137).  Set Tolerances(uniformity_median=...) on a drive "
-            "whose faults hold still - an Eq. S19 tone fault does."
+            "a one-frame excursion that any median erases (WO-24 §1; the clean flagship "
+            "medians 0.102, a 0.80-rung fault 0.098).  Set Tolerances(uniformity_median=...) "
+            "on a drive whose faults hold still - an Eq. S19 tone fault does."
         )
     elif coverage["uniformity_median"] <= 0.0 and n_frames >= MIN_MEDIAN_FRAMES:
         notes.append(
@@ -1652,9 +1653,9 @@ def _notes(
         notes.append(
             "fading drive: light on the extended lattice is whitelisted up to "
             f"{tol.blob_fading:.4g} of the median trap peak rather than gated at "
-            f"{tol.blob_on_lattice:.4g} - an M + 1 (even M) or M + 2 (odd M) wide array is what "
-            "a fading ladder makes, at close to full trap depth; brighter than a real trap it "
-            "is still a finding."
+            f"{tol.blob_on_lattice:.4g} - an array M + 2 wide during a hand-over (odd and even "
+            "M alike) is what a fading ladder makes, at close to full trap depth; brighter "
+            "than a real trap it is still a finding."
         )
     if array.mx > 1 and array.my > 1 and array.delta_f_x == array.delta_f_y:
         notes.append(

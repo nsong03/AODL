@@ -187,8 +187,10 @@ phase `= phase(t) + phase0`; voltage `V(t) = Σ A_n(t) cos(2π f_center t + phas
 ```
 Defaults: `t_start_us = 0`, `t_end_us = duration + τ` (never beyond `t_span[1] − τ/2`, which the
 server clamps to), `n_frames ∈ [2, 240]`. `movie_mixing_order` (`1 | 3 | null`) overrides the
-hardware order for the metrics only (DESIGN §1.2); when `null` and the first frame at the
-requested order holds more than 160 frequency groups the server uses 1 and says so in `notes`.
+hardware order for the metrics only (DESIGN §1.2); when `null` and the busiest of three probed
+frames (first lit frame, trajectory midpoint, first hand-over) at the requested order holds more
+than 80 frequency groups (a cost budget: ~0.5 ms per group and frame, so the default 80-frame
+movie stays under ~3 s) the server uses 1 and says so in `notes`.
 ```json
 {
   "plan_id": "...", "times_us": [...], "tracked_z_um": [...],
@@ -197,7 +199,9 @@ requested order holds more than 160 frequency groups the server uses 1 and says 
                                          // of a frequency group (DESIGN §1 item 2)
   "constants": PlanConstants,              // the full §4 block (a superset of waist0_um, rayleigh_um, tau_us)
   "bounds_um": {"x0": -3.0, "x1": 25.0, "y0": -8.0, "y1": 8.0, "z0": -2.0, "z1": 8.0},
-                // requested trajectory ± array half-extent ± 6 w0 laterally, ± 1 z_R axially
+                // requested trajectory ± array half-extent ± 6 w0 laterally, ± 1 z_R axially;
+                // on a fading-Shepard drive each array axis (M > 1) is one pitch wider per side,
+                // so the M + 2 hand-over columns are on the canvas (round 2, R2-verify)
                 // (NOT the spot table: shadow tweezers at ±10.3·Δf µm would blow the canvas up)
   "power_ref": 6.59e-29,                  // median over lit frames of the brightest trap's power, spots
                                           // within one w0 merged first (so a trap reads 1.0 on its plateau
@@ -254,7 +258,7 @@ single-term trap on its own plane (within 2 % for a static tweezer at `t = 3τ`)
 (no spots) has `gauss_peak = 0`. With a fixed or explicit plane the Gaussian peak is still the
 spot's in-focus value, so the ratio then also measures defocus. `movie_mixing_order` is resolved exactly
 as in §5.1, so the exact frame shows the same spot set as the movie (`null` → the hardware
-order unless the > 160-group fallback applies). `spots` are the §5.1 clusters of this frame,
+order unless the > 80-group fallback applies). `spots` are the §5.1 clusters of this frame,
 unrounded and uncut.
 
 ### 5.3 `POST /api/aperture` (`ApertureRequest`) → `ApertureResponse`

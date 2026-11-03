@@ -355,12 +355,20 @@ def frame_times(req: SimulateRequest, plan: MotionPlan) -> tuple[Float, list[str
 def trajectory_bounds(plan: MotionPlan) -> Bounds:
     """``bounds_um`` from the *requested* trajectory (DESIGN §1 item 2): array half-extent
     plus :data:`BOUNDS_WAISTS` waists laterally, :data:`BOUNDS_RAYLEIGH` Rayleigh ranges
-    axially — never from the spot table, whose shadows sit at ``+- 10.3 Delta f`` µm."""
+    axially — never from the spot table, whose shadows sit at ``+- 10.3 Delta f`` µm.
+
+    On a fading-Shepard drive an array axis (``M > 1``) is one pitch wider on each side: its
+    ladder *is* the array ladder (Eq. S27), so the two extra columns of a hand-over
+    (``M + 2``, ``docs/guide.md`` §6.7) are real traps one pitch outside the requested array and
+    belong on the canvas. A single-tone axis keeps the plain margin (its Eq. S31 shadows sit a
+    whole free-axis ``Delta f`` away and are reported off canvas)."""
     samples = sample_trajectory(plan.spec, 200)
     optics = plan.params.optics
     pitch_x, pitch_y = plan.spec.array.pitch(plan.params)
-    half_x = 0.5 * (plan.spec.array.mx - 1) * abs(pitch_x) / um
-    half_y = 0.5 * (plan.spec.array.my - 1) * abs(pitch_y) / um
+    mx, my = plan.spec.array.mx, plan.spec.array.my
+    fading = plan.report.mode == "shepard"
+    half_x = (0.5 * (mx - 1) + (1.0 if fading and mx > 1 else 0.0)) * abs(pitch_x) / um
+    half_y = (0.5 * (my - 1) + (1.0 if fading and my > 1 else 0.0)) * abs(pitch_y) / um
     lateral = BOUNDS_WAISTS * optics.waist0 / um
     axial = BOUNDS_RAYLEIGH * optics.rayleigh / um
     return Bounds(

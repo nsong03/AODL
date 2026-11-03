@@ -1,12 +1,15 @@
 import { useEffect, useRef } from 'react'
 import type { TrajectorySamples } from '../../api/types'
 import { fmt } from '../../physics/format'
-import { spotRadii, type SpotLike } from '../../physics/gaussianBeam'
+import { mergeCoincident, spotRadii, type SpotLike } from '../../physics/gaussianBeam'
 import { zColor } from '../../physics/zColor'
 import type { ViewScale } from './view'
 import { useElementWidth } from '../../hooks/useCanvas'
 
 const HEIGHT = 230
+const ELLIPSE_N = 24
+const UNIT_COS = Float64Array.from({ length: ELLIPSE_N + 1 }, (_, i) => Math.cos((2 * Math.PI * i) / ELLIPSE_N))
+const UNIT_SIN = Float64Array.from({ length: ELLIPSE_N + 1 }, (_, i) => Math.sin((2 * Math.PI * i) / ELLIPSE_N))
 
 /**
  * Isometric view of the bounds box: each spot's 1/e² caustic as 9 ellipses over `z ± 2 z_R`
@@ -112,7 +115,8 @@ export function IsoView({
       ctx.stroke()
     }
     // spots: 9 ellipses over z ± 2 z_R
-    const sorted = [...spots].sort((a, c) => a.x_um + a.y_um - (c.x_um + c.y_um))
+    // coincident duplicates (the rung pairs of a hand-over) drawn once with their summed power
+    const sorted = mergeCoincident(spots).sort((a, c) => a.x_um + a.y_um - (c.x_um + c.y_um))
     for (const s of sorted) {
       const bright = Math.min(1, Math.sqrt(Math.max(0, s.power / Math.max(powerRef, 1e-300))))
       const zc = s.z_um
@@ -124,12 +128,16 @@ export function IsoView({
         ctx.strokeStyle = `rgba(${r * 255}, ${g * 255}, ${bl * 255}, ${alpha})`
         ctx.lineWidth = m === 0 ? 1.4 : 0.9
         ctx.beginPath()
-        const n = 24
-        for (let i = 0; i <= n; i++) {
-          const th = (2 * Math.PI * i) / n
-          const p = P(s.x_um + wx * Math.cos(th), s.y_um + wy * Math.sin(th), z)
-          if (i === 0) ctx.moveTo(p.X, p.Y)
-          else ctx.lineTo(p.X, p.Y)
+        // the projection P() inlined over the shared unit circle: no per-point allocation
+        const cx = width / 2 + ((s.x_um - s.y_um) * c30 - (minX + maxX) / 2) * k
+        const cy = height / 2 - ((s.x_um + s.y_um) * s30 + z - (minY + maxY) / 2) * k
+        for (let i = 0; i <= ELLIPSE_N; i++) {
+          const ex = wx * UNIT_COS[i]
+          const ey = wy * UNIT_SIN[i]
+          const X = cx + (ex - ey) * c30 * k
+          const Y = cy - (ex + ey) * s30 * k
+          if (i === 0) ctx.moveTo(X, Y)
+          else ctx.lineTo(X, Y)
         }
         ctx.stroke()
       }

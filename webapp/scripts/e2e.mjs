@@ -7,8 +7,13 @@
  * dev server with `--dev`, or the backend's own static mount with `--served`), drives the UI with
  * Playwright's bundled Chromium and
  *
- *   - loads `/`, `/basic?example=…` for four examples, `/advanced?example=pick_and_place` and the
- *     10×10 flagship, asserting no console errors, page errors or failed requests;
+ *   - loads `/`, `/basic?example=…` for four examples, `/tutorial/shepard` (plus the two tutorial
+ *     examples in the workbench), `/advanced?example=pick_and_place` and the 10×10 flagship,
+ *     asserting no console errors, page errors or failed requests;
+ *   - round 2: during the 4×4 `array_lift_hold` hold no rendered trap moves more than 0.5·w0 per
+ *     frame interval and never fewer than 16 traps are drawn; `pick_and_place` and
+ *     `array_arbitrary_path` glide (no bright cross-fades); the tutorial's movie equals the
+ *     workbench's for the same examples (same simulate body, same brightest spot at its cursor);
  *   - captures one screenshot per page into `webapp/docs/screenshots/`;
  *   - runs the DESIGN §5 numeric checks through the exposed `window.__aodl` hooks:
  *       (a) pick_and_place at t = 70 µs + τ/2: brightest pixel of the Gaussian approximation vs
@@ -126,7 +131,13 @@ function watch(page, record) {
     if (msg.type() === 'error') record.consoleErrors.push(msg.text())
   })
   page.on('pageerror', (err) => record.pageErrors.push(String(err)))
-  page.on('requestfailed', (req) => record.failedRequests.push(`${req.method()} ${req.url()} ${req.failure()?.errorText ?? ''}`))
+  page.on('requestfailed', (req) => {
+    const why = req.failure()?.errorText ?? ''
+    // a fetch the app cancelled itself (AbortController: a newer cursor time superseded it, or the
+    // page closed) is not a failure; it is listed separately so a flood of them stays visible
+    if (why === 'net::ERR_ABORTED') (record.abortedRequests ??= []).push(`${req.method()} ${req.url()}`)
+    else record.failedRequests.push(`${req.method()} ${req.url()} ${why}`)
+  })
   page.on('response', (res) => {
     if (res.status() >= 400) record.failedRequests.push(`${res.request().method()} ${res.url()} -> ${res.status()}`)
   })
@@ -167,7 +178,7 @@ async function loadPage(context, route, name, { waitStore = true, timeoutMs = 12
 function judge(name, record) {
   const bad = record.consoleErrors.length + record.pageErrors.length + record.failedRequests.length
   if (bad) fail(`${name}: ${record.consoleErrors.length} console errors, ${record.pageErrors.length} page errors, ${record.failedRequests.length} failed requests: ${[...record.consoleErrors, ...record.pageErrors, ...record.failedRequests].slice(0, 3).join(' | ')}`)
-  else ok(`${name}: no console errors, no failed requests`)
+  else ok(`${name}: no console errors, no failed requests${record.abortedRequests?.length ? ` (${record.abortedRequests.length} superseded request(s) aborted by the app)` : ''}`)
 }
 
 async function shot(page, file) {
@@ -375,6 +386,76 @@ async function measureFps(page, seconds = 2) {
   return { ...r, ...extra }
 }
 
+async function checkMotion(page, label, t0, t1) {
+  // Rendered motion between consecutive frames, through the same hooks the movie uses: inside one
+  // frame interval `spotsAt` keeps one spot list (paired spots interpolate, unpaired ones fade),
+  // so spot k just after frame i and just before frame i + 1 is the same rendered spot.
+  // `max_moved_w0` = its largest displacement over an interval; `bright_cross_fades` = spots of
+  // ≥ 20 % of the frame maximum that are not paired (they fade in place instead of moving);
+  // `traps_appearing` / `traps_vanishing` = those with no spot of the other frame within
+  // 0.5·w0 either (light switching on or off at a site, not a rung pair handing over).
+  return page.evaluate(
+    ({ t0, t1 }) => {
+      const { store, physics } = window.__aodl
+      const sim = store.getState().sim
+      const w0 = sim.constants.waist0_um
+      const T = sim.times_us
+      let intervals = 0
+      let maxMoved = 0
+      let maxMovedAt = null
+      let maxShift = 0
+      let crossFades = 0
+      let crossFadeIntervals = 0
+      let appear = 0
+      let vanish = 0
+      const siteCounts = {}
+      for (let i = 0; i + 1 < T.length; i++) {
+        if (T[i] < t0 || T[i + 1] > t1) continue
+        const A = physics.frameSpots(sim.frames[i])
+        const B = physics.frameSpots(sim.frames[i + 1])
+        if (!A.length || !B.length) continue
+        intervals++
+        const pmax = Math.max(...A.map((x) => x.power), ...B.map((x) => x.power))
+        const pairing = physics.pairFrames(A, B, w0)
+        maxShift = Math.max(maxShift, Math.hypot(pairing.shift[0], pairing.shift[1]) / w0)
+        const eps = 1e-6 * (T[i + 1] - T[i])
+        const s0 = physics.spotsAt(sim, T[i] + eps).spots
+        const s1 = physics.spotsAt(sim, T[i + 1] - eps).spots
+        for (let k = 0; k < Math.min(s0.length, s1.length); k++) {
+          if (Math.max(s0[k].power, s1[k].power) < 0.05 * pmax) continue
+          const d = Math.hypot(s1[k].x_um - s0[k].x_um, s1[k].y_um - s0[k].y_um) / w0
+          if (d > maxMoved) {
+            maxMoved = d
+            maxMovedAt = T[i]
+          }
+        }
+        let cf = 0
+        const r = 0.5 * w0
+        const [sx, sy] = pairing.shift
+        const near = (list, x, y) => list.some((q) => Math.hypot(q.x_um - x, q.y_um - y) < r)
+        A.forEach((x, k) => {
+          if (pairing.pair[k] >= 0 || x.power < 0.2 * pmax) return
+          cf++
+          if (!near(B, x.x_um + sx, x.y_um + sy)) vanish++
+        })
+        B.forEach((x, j) => {
+          if (pairing.paired[j] || x.power < 0.2 * pmax) return
+          cf++
+          if (!near(A, x.x_um - sx, x.y_um - sy)) appear++
+        })
+        crossFades += cf
+        if (cf) crossFadeIntervals++
+        const sites = physics.frameSites(sim.frames[i], w0)
+        const dmax = Math.max(...sites.map((x) => x.depth))
+        const n = sites.filter((x) => x.depth >= 0.25 * dmax).length
+        siteCounts[n] = (siteCounts[n] ?? 0) + 1
+      }
+      return { t0, t1, frame_dt_us: T[1] - T[0], intervals, max_moved_w0: maxMoved, max_moved_at_us: maxMovedAt, max_rigid_shift_w0: maxShift, bright_cross_fades: crossFades, cross_fade_intervals: crossFadeIntervals, traps_appearing: appear, traps_vanishing: vanish, traps_per_frame: siteCounts }
+    },
+    { t0, t1 },
+  ).then((r) => ({ label, ...r }))
+}
+
 // -------------------------------------------------------------------------------------- main
 async function main() {
   mkdirSync(SHOTS, { recursive: true })
@@ -414,6 +495,10 @@ async function main() {
     await checkAperture(page, tFill)
     results.checks.aperture_filling = results.checks.aperture
     results.checks.aperture = saved
+    const glide = await checkMotion(page, 'pick_and_place', 0, 1e9)
+    results.checks.motion_pick_and_place = glide
+    if (glide.bright_cross_fades === 0) ok(`pick_and_place glides: ${glide.intervals} frame intervals of ${glide.frame_dt_us.toFixed(2)} µs, max rendered step ${glide.max_moved_w0.toFixed(3)} w0 (rigid shift ≤ ${glide.max_rigid_shift_w0.toFixed(3)} w0), 0 cross-fades`)
+    else fail(`pick_and_place cross-fades: ${JSON.stringify(glide)}`)
     judge('basic_pick_and_place', record)
     await page.close()
   }
@@ -436,8 +521,41 @@ async function main() {
     results.checks.fps_array_lift_hold = fps
     if (fps.fps >= 30) ok(`playback 4×4: ${fps.fps.toFixed(1)} fps over ${fps.seconds.toFixed(2)} s (${fps.frames} frames, worst gap ${fps.worst_gap_ms.toFixed(1)} ms, up to ${fps.max_spots} spots/frame)`)
     else fail(`playback 4×4 only ${fps.fps.toFixed(1)} fps`)
-    await page.waitForTimeout(300)
+    // during the hold: no rendered trap may move more than 0.5 w0 per frame interval
+    const hold = await page.evaluate(() => {
+      const s = window.__aodl.store.getState()
+      const seams = s.plan.seams_us
+      const ht = s.plan.constants.half_tau_us
+      const evs = s.plan.fade_events.filter((e) => e.axis === 'x' && e.time_us > seams[1] && e.time_us < seams[2])
+      const mid = evs[Math.floor(evs.length / 2)]
+      return { t0: seams[1] + ht, t1: seams[2] + ht, handover: mid.time_us + ht, w0: s.sim.constants.waist0_um }
+    })
+    const motion = await checkMotion(page, 'array_lift_hold hold', hold.t0, hold.t1)
+    results.checks.motion_array_lift_hold = motion
+    const counts = Object.keys(motion.traps_per_frame).map(Number)
+    if (motion.max_moved_w0 <= 0.5) ok(`4×4 hold [${hold.t0.toFixed(1)}, ${hold.t1.toFixed(1)}] µs: ${motion.intervals} intervals of ${motion.frame_dt_us.toFixed(2)} µs, max rendered step ${motion.max_moved_w0.toFixed(4)} w0 (≤ 0.5), ${motion.bright_cross_fades} spot cross-fades in place (${motion.traps_appearing} traps switching on, ${motion.traps_vanishing} off: the edge columns) in ${motion.cross_fade_intervals} intervals, traps per frame ${JSON.stringify(motion.traps_per_frame)}`)
+    else fail(`4×4 hold: a rendered trap moved ${motion.max_moved_w0} w0 in one frame interval (at ${motion.max_moved_at_us} µs)`)
+    if (Math.min(...counts) >= 16) ok(`4×4 hold: never fewer than 16 traps rendered (min ${Math.min(...counts)}, max ${Math.max(...counts)})`)
+    else fail(`4×4 hold: only ${Math.min(...counts)} traps in some frame`)
+    await page.evaluate((t) => {
+      const s = window.__aodl.store.getState()
+      s.pause()
+      s.setTime(t)
+    }, hold.handover)
+    await page.waitForTimeout(1200) // line cuts fetch 250 ms after the cursor settles
+    const atCursor = await page.evaluate(() => {
+      const { store, physics } = window.__aodl
+      const s = store.getState()
+      const f = physics.spotsAt(s.sim, s.t_us)
+      return { t_us: s.t_us, spots: f.spots.length }
+    })
+    results.checks.array_lift_hold_handover_cursor = atCursor
     await shot(page, 'basic_array_lift_hold.png')
+    const panel = page.locator('section.panel', { has: page.locator('h3', { hasText: 'Trap intensity' }) })
+    await panel.scrollIntoViewIfNeeded()
+    await page.waitForTimeout(400)
+    await panel.screenshot({ path: path.join(SHOTS, 'intensity_panel.png') })
+    console.log('  shot intensity_panel.png')
     judge('basic_array_lift_hold', record)
     await page.close()
   }
@@ -452,8 +570,78 @@ async function main() {
     })
     await page.waitForTimeout(400)
     await shot(page, 'basic_array_arbitrary_path.png')
+    const glide = await checkMotion(page, 'array_arbitrary_path', 0, 1e9)
+    results.checks.motion_array_arbitrary_path = glide
+    if (glide.bright_cross_fades === 0) ok(`array_arbitrary_path glides: ${glide.intervals} intervals of ${glide.frame_dt_us.toFixed(2)} µs, max rendered step ${glide.max_moved_w0.toFixed(3)} w0 (rigid shift ≤ ${glide.max_rigid_shift_w0.toFixed(3)} w0), 0 cross-fades`)
+    else fail(`array_arbitrary_path cross-fades: ${JSON.stringify(glide)}`)
     judge('basic_array_arbitrary_path', record)
     await page.close()
+  }
+
+  // tutorial: /tutorial/shepard — two drives side by side on the page-local cursor; compare its
+  // movie with the workbench's for the same examples (same /api/simulate body, same spots)
+  {
+    const sims = {}
+    const record = { consoleErrors: [], pageErrors: [], failedRequests: [] }
+    const page = await context.newPage()
+    watch(page, record)
+    page.on('response', async (res) => {
+      if (!/\/api\/simulate$/.test(res.url()) || res.status() !== 200) return
+      try {
+        const body = await res.json()
+        sims[body.plan_id] = body
+      } catch {
+        /* navigation raced the body */
+      }
+    })
+    const t0 = Date.now()
+    await page.goto(`${UI}/tutorial/shepard`, { waitUntil: 'networkidle', timeout: 120_000 })
+    await page.waitForFunction(() => [...document.querySelectorAll('.badge')].filter((b) => /brightest P\/P_ref/.test(b.textContent ?? '')).length === 2, null, { timeout: 120_000 })
+    const tReady = Date.now() - t0
+    await page.waitForTimeout(800)
+    const badges = await page.locator('.badge', { hasText: 'brightest P/P_ref' }).allTextContents()
+    const warn = await page.locator('.badge.warn').allTextContents()
+    results.pages.tutorial = { route: '/tutorial/shepard', ...record, ms_ready: tReady, badges, warn }
+    await shot(page, 'tutorial.png')
+    // the redirect
+    await page.goto(`${UI}/tutorial`, { waitUntil: 'networkidle' })
+    const redirected = page.url()
+    judge('tutorial', record)
+    await page.close()
+    // the same two examples in the workbench, at the tutorial's start cursor (the Shepard
+    // drive's first x hand-over + τ/2)
+    const presets = await api('/presets')
+    const shepReq = presets.examples.find((e) => e.id === 'tutorial_hold_shepard').request
+    const shepPlan = await api('/plan', shepReq)
+    const tStart = shepPlan.fade_events.find((e) => e.axis === 'x').time_us + shepPlan.constants.half_tau_us
+    const compare = {}
+    const expected = []
+    for (const id of ['tutorial_hold_plain', 'tutorial_hold_shepard']) {
+      const { page: bp, record: br } = await loadPage(context, `/basic?example=${id}`, `basic_${id}`)
+      const r = await bp.evaluate(
+        ({ tutSims, t }) => {
+          const { store, physics } = window.__aodl
+          const s = store.getState()
+          const f = physics.spotsAt(s.sim, t)
+          const top = physics.brightest(f.spots)
+          return { plan_id: s.sim.plan_id, sim_identical: JSON.stringify(s.sim) === JSON.stringify(tutSims[s.sim.plan_id] ?? null), n: f.spots.length, rel: top.power / s.sim.power_ref, z: top.z_um }
+        },
+        { tutSims: sims, t: tStart },
+      )
+      compare[id] = r
+      const f2 = (v) => v.toFixed(2) // physics/format.ts fmt(x, 2)
+      expected.push(`brightest P/P_ref ${f2(r.rel)} · z ${f2(r.z)} µm · ${r.n} spot${r.n === 1 ? '' : 's'}`)
+      judge(`basic_${id}`, br)
+      await bp.close()
+    }
+    const same = Object.values(compare).every((c) => c.sim_identical) && badges.length === 2 && badges.every((b, k) => b.trim() === expected[k])
+    results.checks.tutorial_vs_workbench = { t_cursor_us: tStart, compare, tutorial_badges: badges, workbench_badges: expected, redirect: redirected }
+    if (same) ok(`tutorial = workbench: identical /api/simulate bodies for both drives; at t = ${tStart.toFixed(3)} µs both render "${expected[0]}" | "${expected[1]}"`)
+    else fail(`tutorial vs workbench differ: ${JSON.stringify(results.checks.tutorial_vs_workbench)}`)
+    if (/\/tutorial\/shepard$/.test(redirected)) ok('/tutorial redirects to /tutorial/shepard')
+    else fail(`/tutorial redirect landed on ${redirected}`)
+    if (warn.some((w) => /shadow tweezer/.test(w))) ok(`tutorial start cursor shows the Shepard shadows: "${warn.find((w) => /shadow/.test(w))}"`)
+    else fail(`tutorial: no shadow badge at the start cursor (${JSON.stringify(warn)})`)
   }
 
   // advanced: efficiency panel

@@ -197,3 +197,161 @@ the same URL (title "AODL Studio", plan and movie ready), assets are served as f
 `landing.png` · `basic_pick_and_place.png` (t = τ) · `basic_single_lift_hold_fade.png` (first
 x hand-over + τ/2, shadow badge) · `basic_array_lift_hold.png` · `basic_array_arbitrary_path.png`
 (mid-circle) · `advanced_efficiency.png` · `basic_flagship_10x10.png` (mid-traverse).
+
+---
+
+# Round 2 — verification (R2-verify)
+
+Same container and versions as above (Python 3.13.18, numpy 2.5.3, Node 22, Playwright 1.63 /
+Chromium 153 headless, `default_1030`: τ = 11.5385 µs, w0 = 1.0655 µm, λF/v = 10.30 µm/MHz).
+Round 2 = the four work orders of `workorders/round2/` (addendum §F1–F4). The four reports in
+`reports/R2-*.md` were treated as claims; everything below was re-measured. Defects found and
+fixed in this pass are listed in `reports/R2-verify.md`.
+
+## R2.0 Gates
+
+| gate | command | result |
+|---|---|---|
+| root suite | `python -m pytest -q` | **464 passed, 1 xfailed** (149 s), after every R2-verify edit |
+| root lint / types | `ruff check src tests`, `ruff format --check src tests`, `python -m mypy src/aodl` | clean (75 files); mypy: the 10 pre-existing numpy-2.5 `call-overload` errors only (§6) |
+| notebooks | `python -m pytest --nbmake examples/05_fading_shepard.ipynb` (and `06_…`, `07_…`, one at a time) | 05 **failed** on arrival (`assert set(nodes_lit) == {(11, 11)}` — the retired even-M rule); after the fix all three pass (final run: 05 93 s, 06 35 s, 07 30 s); outputs cleared |
+| webapp | `make -C webapp lint test build` | ruff/mypy clean (31 files), eslint/tsc clean; backend **123 passed**, frontend **10 files / 84 tests**; bundle 157 kB gzip (index 61.9 + vendor 68.4 + uPlot 23.3 + CSS 3.7) |
+| fixtures | `make -C webapp fixtures` | byte-identical to R2-core's regeneration for `array_lift_hold.json` and `pick_and_place.json`; `examples.json` differs only in the two blurbs R2-verify corrected (regenerated, then a second run is a no-op) |
+| Python 3.11 | `python3.11 -m py_compile` on every edited `.py` | OK |
+| e2e | `node webapp/scripts/e2e.mjs` (uvicorn :8000 + `vite preview` :4173) | **all checks passed**, 0 console errors / page errors / failed requests on all 11 pages |
+
+## R2.1 F1 — landing diagram
+
+`landing.png`: laser → **Ax → Ay** (boxed "first 2D deflector", sound −x, −y) → 4f relay
+("images the A plane onto the B plane, magnification −1") → **Bx → By** ("second 2D
+deflector", sound +x, +y) → objective → focal volume, matching arXiv:2510.11451 Fig. 1(a);
+the "How to read the diagram" prose says the same.
+
+## R2.2 F2 — even-M arrays: every requested site lit
+
+Through the live `POST /api/simulate` (HTTP, not the test client), `array_lift_hold`'s
+trajectory (Lift 8 µm / 80 µs, Hold 500 µs, Lift −8 µm / 80 µs) with the array replaced,
+120 frames over `[2τ, 580 µs + τ/2]`, `movie_mixing_order` pinned; `power` summed within
+0.25 pitch of each Eq. S19 site; normalised to the median over all (frame, requested site)
+values (R2-core normalised to the first frame's median — the bracketed value, which agrees
+with R2-core's table to ±0.001):
+
+| array (Δf MHz) | worst requested site, order 1 | worst, order 3 | brightest requested, order 3 | extended (edge) site max, order 1 | off-lattice max | hand-overs |
+|---|---|---|---|---|---|---|
+| 4×4 (1.0/1.3) | **0.949** | **0.851** (0.855) | 1.038 | 0.985 | 0 | 41 |
+| 2×2 (1.0/1.3) | 0.949 | 0.927 (0.926) | 1.024 | 0.985 | 0 | 41 |
+| 1×4 (1.0/1.3) | 0.979 | 0.914 (0.916) | 1.039 | 0.979 | 0.50 (x shadows) | 21 |
+| 4×1 (1.0/1.3) | 0.965 | 0.892 (0.907) | 1.035 | 0.989 | 0.50 (y shadows) | 25 |
+| 3×3 (1.0/1.3), odd control | 0.949 | 0.916 (0.915) | 1.038 | 0.985 | 0 | 41 |
+| 4×4 (1.0/1.0) | 0.964 | 0.933 (0.935) | 1.032 | 0.988 | 0 | 46 |
+
+Every requested site is **≥ 0.80 of the plateau at every frame** (worst 0.851, the 4×4 at
+order 3), and the even arrays now behave exactly like the odd 3×3 control. The "off-lattice"
+0.50 on the 1×4 / 4×1 is the single-tone axis's Eq. S31 shadow pair (free-axis Δf = 12 MHz,
+±123.6 µm), as expected. The addendum's "with the fix" column was order 3, not order 1 (R2-core
+§2); `R2-DESIGN-ADDENDUM.md` §F2 now shows both columns.
+
+**Extended columns switch hard.** A dense probe of the 4×4 around the x hand-over at
+`t = 161.6 µs` (240 frames over ±20 µs, Δt = 0.167 µs, order 1): the four requested columns
+stay in [0.965, 1.001] with a largest frame-to-frame change of 0.035, while each extended
+column jumps by **0.966 in a single 0.167 µs frame** — column `x = +2.5 pitch` switches off at
+`−19.3 µs`, column `x = −2.5 pitch` on at `+19.2 µs` (the Table II `p_B = 0` rectangles), and
+fades smoothly through the A window in between.
+
+**`single_lift_hold` shadows** (`/api/frame` at each of the five hand-overs + τ/2,
+t = 159.4, 283.0, 406.6, 530.2, 653.8 µs, alternating x/y): 4 spots each time, two shadows at
+**±123.6 µm** with **P/P_main = 0.5004** at every one (Eq. S31: ½).
+
+**`pick_and_place` unchanged**: mode `s19`, one tone per channel, band
+Ax [100, 101.4563], Bx [100, 103.3981], Ay/By [100, 102.4272] MHz (identical to round 1),
+one spot per frame, brightest spot vs requested `X, Y, Z(t − τ/2)` within 5.0e-4 µm (the
+trajectory-sample interpolation), frame power constant (spread 0). Its golden fixture is
+byte-identical after `make fixtures`.
+
+**`flagship_10x10`**: 94 rungs (Ax 21, Bx 30, Ay 17, By 26; was 93), worst band margin
++1.961 MHz on By (was +1.31), 34 hand-overs, the first fully lit frame holds 461 groups at
+order 3 (budget 160 → order-1 movie, as before).
+
+## R2.3 F3 — the tutorial drives
+
+`/api/plan` + `/api/advanced/trajectory_efficiency` (default `EfficiencyModel`, n = 300):
+
+| | `tutorial_hold_plain` | `tutorial_hold_shepard` |
+|---|---|---|
+| mode, tones | `s19`, 1 per channel | `shepard`, 4 per channel (Δf 12 / 12 MHz) |
+| band margin | **−22.04 MHz on all four channels** (100–132.04 MHz) | **+1.00 MHz** on all four (91–109 MHz) |
+| first tone out of band (from the IR) | drive 236.0 µs → atoms **241.8 µs** | never |
+| η-weighted power / its own max | 0.0158 max after 241.8 µs; 0.0096 max after 241.8 µs + τ; first below 0.05 at 212 µs | min **0.629**; ≥ 0.94 within ±20 µs of each hand-over + τ/2, ≥ 0.82 within ±40 µs; ≥ 0.80 for 79 % of the live time |
+| raw η product max | 0.522 (= η_peak⁴) | 0.502 |
+
+The plain drive meets the work-order criterion (< 0.05 after the band edge). The Shepard
+drive does **not** meet "≥ 0.8 away from hand-overs" as phrased: the Bragg/TPM model's dips
+are *between* hand-overs (minima at ≈ 105, 229, 354, 478, 602 µs, midway between the x and y
+events at 159, 283, 407, 530, 654 µs), not at them, and they are on the **B** channels
+(Bx 0.687 at 229 µs while Ax is 0.849): the model's B mismatch carries the first AOD's
+offset through `−2γ f_tpm (f_A − f_tpm)`, which is ~40× more sensitive than the B channel's
+own `(f_B − f_tpm)²`, so a live A rung a quarter ladder off `f_tpm` costs the B crystal most.
+This is the model (γ is a user-set stand-in, README "advanced engine" table), not the drive;
+the tutorial's caption says "dips where the live rungs sit away from the TPM frequency but
+never collapses", which is accurate. See open issue O3 in `reports/R2-verify.md`.
+
+## R2.4 F4 and the movie — browser checks (`e2e.mjs`, new in round 2)
+
+**Rendered motion** through `window.__aodl` (`physics.spotsAt` just after frame *i* and just
+before frame *i* + 1 — one spot list per interval, so spot *k* is the same rendered spot;
+`physics.pairFrames` for the pairing and its rigid shift; sites by `physics.frameSites`):
+
+| movie | frame interval | intervals | max rendered step per interval | rigid shift | bright cross-fades (≥ 20 % of frame max) | traps per frame (sites ≥ ¼ of the brightest) |
+|---|---|---|---|---|---|---|
+| `array_lift_hold`, hold `[85.8, 585.8]` µs | 8.50 µs | 57 | **0.0000 w0** (≤ 0.5 required) | 0 | 1011 in place, of which 243 switching on / 227 off with no spot within 0.5·w0 in the other frame (the hard-switched edge columns) | 16 (16 frames), 20 (16), 24 (12), 25–34 (13) — **never fewer than 16** |
+| `pick_and_place` | 1.92 µs | 75 | 1.124 w0 (a real carry, interpolated) | ≤ 1.124 w0 | **0** | 1 |
+| `array_arbitrary_path` | 5.21 µs | 77 | 0.961 w0 | ≤ 0.961 w0 | **0** | 9 |
+
+The 4×4's `bounds_um` now include one extra pitch per side on each fading array axis
+(`reports/R2-verify.md` D6): before, the M + 2 hand-over columns sat 10.3 / 13.4 µm outside the
+requested array but only 6 w0 = 6.4 µm of margin was drawn, so the movie never showed them and
+the badge counted them as "36 shadow tweezers off canvas". Every spot of every 4×4 frame is now
+inside the canvas (backend test `test_fading_array_bounds_include_the_extended_columns`).
+
+So during the 4×4 hold no rendered trap moves at all between frames (the requested sites do
+not move; light switching at the edge columns cross-fades in place), and both carrying movies
+glide with zero cross-fades — R2-frontend-a's rigid-shift addition does what it claims, and
+the 2·w0 cap is not reached (largest real step 1.12 w0).
+
+**Tutorial vs workbench** (R2-frontend-b's wrappers): the tutorial page's two `/api/simulate`
+bodies (captured from the network) are **byte-identical** (`JSON.stringify`) to the
+workbench's for `/basic?example=tutorial_hold_plain` and `…_shepard`; at the tutorial's start
+cursor (first x hand-over + τ/2 = 159.369 µs) both render "brightest P/P_ref 1.00 · z 10.00 µm
+· 1 spot" (plain) and "brightest P/P_ref 0.53 · z 10.00 µm · 4 spots" (Shepard), and the
+tutorial shows "2 shadow tweezers off canvas at ±123.6 µm (x hand-over)". `/tutorial`
+redirects to `/tutorial/shepard`. Tracks: both RF panels use `useRfTracks` on the same plan.
+
+**Intensity panel** (`intensity_panel.png`, 4×4 at the hand-over t = 341.9 µs): 36 trap
+tracks, line cuts with exact peak 0.868, Gaussian 0.977 (exact/Gaussian 0.888, order-3
+metrics) — the Gaussian approximation ignores the interference of the IM3 terms that land on
+the trap; static single tweezer exact/Gaussian = 1.0000 (R2-backend, re-checked by the
+existing backend test).
+
+**Playback** (rAF over 2 s, headless software rendering): 4×4 **47.1 fps** (100 spots/frame),
+flagship **30.0 fps** (484 spots at the cursor). On arrival they were 32.7 and **20.6 fps**
+(flagship below the 30-fps gate): the fix halves the drawn spots — exact coincident duplicates
+(the two rung pairs of a hand-over) are merged before drawing, and `renderXY` reuses its
+accumulators and `IsoView` stops allocating per ellipse point (`reports/R2-verify.md` D5).
+
+**Pages**: `/`, `/basic?example=` pick_and_place / single_lift_hold / array_lift_hold /
+array_arbitrary_path / tutorial_hold_plain / tutorial_hold_shepard / flagship_10x10,
+`/tutorial/shepard`, `/advanced?example=pick_and_place`, served SPA — 0 console errors,
+0 page errors, 0 failed requests. Two `/api/frame` line-cut fetches were cancelled by the app
+itself (a newer cursor time superseded them); `e2e.mjs` now lists `net::ERR_ABORTED` as
+`abortedRequests` instead of failing on it. Time to movie: pick_and_place 1.2 s,
+single_lift_hold 1.7 s, **array_lift_hold 7.6 s** (`/api/simulate` 5.9 s / 300 kB — the 4×4's
+first lit frame now holds 152 groups at order 3, under the 160 budget, so its movie runs at
+order 3; it was 165 → order 1 before the fix), flagship 4.4 s, tutorial 1.0 s.
+
+## R2.5 Screenshots (`webapp/docs/screenshots/`, all regenerated by `e2e.mjs`)
+
+`landing.png` (corrected diagram) · `basic_array_lift_hold.png` (4×4 at a mid-hold x
+hand-over + τ/2: the 16 requested traps plus the switched edge columns, now on the canvas) ·
+`intensity_panel.png` (new) · `tutorial.png` (new) · `basic_pick_and_place.png` ·
+`basic_single_lift_hold_fade.png` · `basic_array_arbitrary_path.png` ·
+`advanced_efficiency.png` · `basic_flagship_10x10.png`.

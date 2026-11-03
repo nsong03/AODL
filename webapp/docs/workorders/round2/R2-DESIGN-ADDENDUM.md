@@ -18,19 +18,23 @@ pair, which is right), so this is a drawing and prose fix.
 ## F2 · Even-M fading-Shepard arrays walk: requested traps go dark once per hand-over (R2-core)
 
 **Measured** (per-site power of the requested lattice sites, summed over coincident spots,
-relative to the plateau; `Lift 8 µm / 80 µs, Hold 500 µs`, Δf = 1.0/1.3 MHz, mixing order 1):
+relative to the plateau; `Lift 8 µm / 80 µs, Hold 500 µs`, Δf = 1.0/1.3 MHz). *Corrected in
+R2-verify:* the architect's "with the fix" column was measured at mixing order 3, not 1 (R2-core
+§2 found this); both orders are shown below, from `reports/R2-core.md` §2 and re-measured
+through `POST /api/simulate` in `VERIFICATION.md` §R2.2 (agreeing to ±0.001 with the same normalisation). The "as shipped" column is R2-core's re-measurement; the first measurement here read 0.001–0.003:
 
-| array | as shipped: worst requested-site power | with the fix |
-|---|---|---|
-| 4×4 | **0.001** | 0.857 |
-| 2×2 | **0.001** | 0.928 |
-| 1×4 | **0.001** | 0.910 |
-| 4×1 | **0.003** | 0.902 |
-| 3×3 | 0.917 | 0.917 (unchanged) |
-| 4×4 at Δf 1.0/1.0 | **0.002** | 0.935 |
+| array | as shipped, order 1: worst requested site | with the fix, order 1 | with the fix, order 3 (API default) |
+|---|---|---|---|
+| 4×4 | **0.000** | 0.949 | 0.855 |
+| 2×2 | **0.000** | 0.949 | 0.926 |
+| 1×4 | **0.000** | 0.979 | 0.916 |
+| 4×1 | **0.000** | 0.965 | 0.907 |
+| 3×3 | 0.949 | 0.949 (unchanged) | 0.915 |
+| 4×4 at Δf 1.0/1.0 | **0.000** | 0.965 | 0.935 |
 
-The residual 7–14 % dip of the fixed cases is the fade-speed ripple `ρ` already documented in
-`docs/guide.md` §6.4 (the 3×3 shows the same), not a defect.
+The residual dip of the fixed cases is 2–5 % at order 1 — the fade-speed ripple `ρ` already
+documented in `docs/guide.md` §6.4 (the 3×3 shows the same) — and 7–15 % at order 3, where
+the intermodulation of Eqs. S20–S22 adds the rest; neither is a defect.
 
 **Mechanism.** Table II gives the A and B ladders of an axis the same offset `ξ`. Rung `n` of
 either ladder sits at fade coordinate `g_n = f_Z + (n + ξ)Δf`. The A window (Eq. S26, `m = 1`)

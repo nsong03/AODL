@@ -161,7 +161,8 @@ EXAMPLES: list[ExampleSpec] = [
         id="array_lift_hold",
         title="4×4 array, lift and hold",
         blurb="A 4×4 array (1.0 / 1.3 MHz) lifted 8 µm and held 500 µs on fading-Shepard "
-        "ladders: the array ladder is the Shepard ladder, so the lit grid grows by a column.",
+        "ladders: the array ladder is the Shepard ladder, so two edge columns light up during "
+        "each hand-over while all 16 requested traps stay lit.",
         tags=["array", "shepard", "hold"],
         request=_request([_lift(8.0, 80.0), _hold(500.0), _lift(-8.0, 80.0)], mx=4, my=4),
     ),
@@ -185,7 +186,7 @@ EXAMPLES: list[ExampleSpec] = [
         id="flagship_10x10",
         title="10×10 flagship traverse",
         blurb="The paper's user story: a 10×10 array lifted 10 µm, carried 40 × 25 µm and set "
-        "down — 93 fading-Shepard rungs, 483 frequency groups at mixing order 3.",
+        "down — 94 fading-Shepard rungs, about 460 frequency groups at mixing order 3.",
         tags=["array", "shepard", "slow"],
         request=_request(
             [_lift(10.0, 150.0), _translate(40.0, 25.0, 250.0), _lift(-10.0, 150.0)],

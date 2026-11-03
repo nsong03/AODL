@@ -526,8 +526,9 @@ def _shepard_band_message(
         ""
         if comb == 0.0
         else (
-            f" and the {abs(comb) / MHz:.4f} MHz comb offset that puts an even-M ladder on "
-            f"Eq. S19's lattice"
+            f" and the explicit {abs(comb) / MHz:.4f} MHz comb offset (ShepardConfig."
+            f"comb_offset; the automatic one is 0, since table_ii's half-rung xi_B already puts "
+            f"an even-M ladder on Eq. S19's lattice)"
         )
     )
     return (

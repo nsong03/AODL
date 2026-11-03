@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { SpotFrame } from '../src/api/types'
-import { frameSpots, integrateXY, peakNormalization, renderXY, renderXZ, spotPeak, spotRadii, type SpotLike } from '../src/physics/gaussianBeam'
+import { frameSpots, integrateXY, mergeCoincident, peakNormalization, renderXY, renderXZ, spotPeak, spotRadii, type SpotLike } from '../src/physics/gaussianBeam'
 
 const w0 = 1.0655
 const zR = 3.463
@@ -143,5 +143,21 @@ describe('peakNormalization / renderXZ', () => {
     expect(best % nx).toBe(50)
     expect(Math.floor(best / nx)).toBe(40)
     expect(bestV).toBeCloseTo(1, 6)
+  })
+})
+
+describe('mergeCoincident', () => {
+  it('sums exact duplicates and leaves distinct spots and the input alone', () => {
+    const a = { x_um: 1, y_um: 2, z_um: 3, delta_f_um: 0, power: 0.25 }
+    const b = { ...a, power: 0.5 }
+    const c = { ...a, x_um: 1.01 }
+    const d = { ...a, delta_f_um: 0.2 }
+    const input = [a, b, c, d]
+    const out = mergeCoincident(input)
+    expect(out).toHaveLength(3)
+    expect(out[0].power).toBeCloseTo(0.75, 15)
+    expect(out[1]).toEqual(c)
+    expect(out[2]).toEqual(d)
+    expect(a.power).toBe(0.25) // not mutated
   })
 })

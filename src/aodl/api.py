@@ -68,7 +68,7 @@ BAND_SAMPLES = 1201
 _LIVE_EPS = 1e-12
 
 #: Samples per :func:`aodl.waveform.export.render_samples` pass inside :meth:`MotionPlan.check`.
-#: A 93-tone fading drive renders ~25 % faster in 16 k blocks than in the 1 M default — one
+#: A 94-tone fading drive renders ~25 % faster in 16 k blocks than in the 1 M default — one
 #: block's per-tone evaluation then stays in cache.
 _RENDER_CHUNK = 1 << 14
 

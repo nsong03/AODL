@@ -229,8 +229,11 @@ compression/IM3 (through the `J₁` law), misalignment, and efficiency roll-off.
 
 Rules: the backend caches `MotionPlan` and `SimResult` by request hash (LRU, ≥ 32 entries);
 `simulate` caps `n_frames` at 240; the *movie metrics* fall back to `mixing_order=1` when the
-first frame at the requested order holds more than 160 frequency groups (a 3×3 at order 3
-already has 49 — 9 traps and 40 IM3 ghosts; a 10×10 has 483) unless the user opts in with
+busiest of three probed frames (first lit frame, trajectory midpoint, first hand-over) at the
+requested order holds more than 80 frequency groups — a cost budget, ~0.5 ms per group and
+frame, so the default 80-frame movie stays under ~3 s (a 3×3 at order 3 has 49 — 9 traps and
+40 IM3 ghosts — and stays; a fading 4×4 has ~220 in a hand-over and a 10×10 ~460, and both
+fall back) unless the user opts in with
 `movie_mixing_order=3` (the plan/report always use the requested order); simulate responses
 are struct-of-arrays, rounded to 6 significant digits, with spots below `1e-3` of the frame's
 maximum power dropped (invisible at gamma 0.7); long routes (`/api/simulate`, `/api/frame`,
@@ -254,6 +257,20 @@ documented in `docs/guide.md` §3 with a one-paragraph note, tested in `tests/te
 Everything downstream — `synthesize`, band checks (`_poly_extrema` works on any polynomial),
 `shepard="auto"`, `plan_motion`, `check_times` — works unchanged because they only use
 `spec.compile()`, `spec.duration`, `spec.array` and `move.duration`.
+
+### 1.4 Even-M fading arrays (round 2)
+
+A fading-Shepard array lights **`M + 2` columns during a hand-over and `M` otherwise, for odd
+and even M alike**, and every requested site stays lit (`cos²θ + sin²θ = 1`). For even M this
+needs `aodl.waveform.shepard.table_ii` to offset the B ladder by half a rung, `ξ_B = ξ_A + ½`;
+the same half rung puts the traps on Eq. S19's half-integer lattice, so the WO-17 frequency-only
+`Δf/2` comb (`lattice_comb_offset`) is now `0`. Before the fix an even-M array lit `M + 1`
+columns and its requested block walked a pitch through each hand-over. The diagnosis, the
+measured before/after table and the consequences for docs and tests are in
+[`workorders/round2/R2-DESIGN-ADDENDUM.md`](workorders/round2/R2-DESIGN-ADDENDUM.md) §F2; the
+re-measurement through the API is in [`VERIFICATION.md`](VERIFICATION.md) §R2.2. The web layer
+re-derives nothing: the movie, the trap-intensity panel and the shadow badge read the spots the
+backend returns.
 
 ## 2. Repository layout
 

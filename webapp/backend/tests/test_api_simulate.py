@@ -204,6 +204,21 @@ def test_bounds_come_from_the_requested_trajectory(client, single_lift_hold):
     assert b["z1"] == pytest.approx(10.0 + body["constants"]["rayleigh_um"])
 
 
+def test_fading_array_bounds_include_the_extended_columns(client):
+    """A fading 4×4's M + 2 hand-over columns sit one pitch outside the requested array: the
+    canvas holds them, and every spot of every frame lies inside it (a single tweezer keeps
+    the plain margin: test_bounds_come_from_the_requested_trajectory)."""
+    body = _simulate(client, example_request("array_lift_hold"), n_frames=24)
+    b = body["bounds_um"]
+    w0 = body["constants"]["waist0_um"]
+    k = body["constants"]["um_per_MHz"]
+    assert b["x1"] == pytest.approx((1.5 + 1.0) * k * 1.0 + 6 * w0)
+    assert b["y1"] == pytest.approx((1.5 + 1.0) * k * 1.3 + 6 * w0)
+    for fr in body["frames"]:
+        for x, y in zip(fr["x_um"], fr["y_um"]):
+            assert b["x0"] < x < b["x1"] and b["y0"] < y < b["y1"]
+
+
 def test_late_frame_is_a_coverage_error(client, pick_and_place):
     response = client.post(
         "/api/simulate",

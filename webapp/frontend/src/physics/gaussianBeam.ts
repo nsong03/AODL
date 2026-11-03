@@ -29,6 +29,32 @@ export interface SpotLike {
   power: number
 }
 
+/**
+ * Spots that coincide exactly in `x, y, z, ΔF` (to 1e-6 µm) merged into one with the summed
+ * power — the dying and rising rung pairs of a fading hand-over are such duplicates. Exact for
+ * every renderer here, which sums linear intensity per pixel before the gamma (identical
+ * profile, identical `zColor`), and it halves the per-frame work on a fading array. Spots that
+ * differ at all are left alone; the input is not modified.
+ */
+export function mergeCoincident(spots: readonly SpotLike[]): SpotLike[] {
+  const key = (s: SpotLike) => `${Math.round(s.x_um * 1e6)},${Math.round(s.y_um * 1e6)},${Math.round(s.z_um * 1e6)},${Math.round(s.delta_f_um * 1e6)}`
+  const at = new Map<string, number>()
+  const out: SpotLike[] = []
+  for (const s of spots) {
+    const k = key(s)
+    const i = at.get(k)
+    if (i === undefined) {
+      at.set(k, out.length)
+      out.push({ x_um: s.x_um, y_um: s.y_um, z_um: s.z_um, delta_f_um: s.delta_f_um, power: s.power })
+    } else out[i].power += s.power
+  }
+  return out
+}
+
+/** Per-pixel accumulators of `renderXY`, reused across calls (one movie frame per rAF). */
+let scratchI = new Float64Array(0)
+let scratchC = new Float64Array(0)
+
 export interface Grid2D {
   x0: number
   x1: number
@@ -174,9 +200,17 @@ export function renderXY(
   const dy = (grid.y1 - grid.y0) / (ny - 1)
   const fx = new Float64Array(nx)
   const fy = new Float64Array(ny)
-  const sumI = new Float64Array(nx * ny)
-  const sumC = new Float64Array(nx * ny * 3)
-  for (const s of spots) {
+  const npx = nx * ny
+  if (scratchI.length < npx) {
+    scratchI = new Float64Array(npx)
+    scratchC = new Float64Array(npx * 3)
+  } else {
+    scratchI.fill(0, 0, npx)
+    scratchC.fill(0, 0, npx * 3)
+  }
+  const sumI = scratchI
+  const sumC = scratchC
+  for (const s of mergeCoincident(spots)) {
     const [wx, wy] = spotRadii(s, plane_z, w0, zR)
     const amp = (s.power * 2) / (Math.PI * wx * wy) / peakNorm
     if (!(amp > 0)) continue
@@ -213,7 +247,7 @@ export function renderXY(
       }
     }
   }
-  for (let q = 0; q < sumI.length; q++) {
+  for (let q = 0; q < npx; q++) {
     const I = sumI[q]
     if (!(I > 0)) continue
     const scaled = Math.pow(I > 1 ? 1 : I, gamma) / I
@@ -250,7 +284,7 @@ export function renderXZ(
   const dx = (xgrid.x1 - xgrid.x0) / (nx - 1)
   const dz = (zgrid.z1 - zgrid.z0) / (nz - 1)
   const intensity = new Float64Array(nx * nz)
-  for (const s of spots) {
+  for (const s of mergeCoincident(spots)) {
     for (let j = 0; j < nz; j++) {
       const z = zgrid.z0 + j * dz
       const [wx, wy] = spotRadii(s, z, w0, zR)

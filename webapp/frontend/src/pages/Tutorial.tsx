@@ -156,7 +156,7 @@ export default function Tutorial() {
                 ) : (
                   <>
                     Through the {d.hand.events.length} hand-overs (amber, at drive time + τ/2) the ideal trap depth stays ≥ {fmt(d.idealMin, 2)} of its plateau and every live tone
-                    stays in band (in-band fraction 1); the η-weighted power dips where the live rungs sit away from the TPM frequency but never collapses.
+                    stays in band (in-band fraction 1); the η-weighted power dips <em>between</em> hand-overs, where the live rungs sit farthest from the TPM frequency (mostly on the B channels, whose Bragg match also shifts with the A frequency in this model), but never collapses.
                   </>
                 )}
                 {sides[s].eff && (

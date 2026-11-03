@@ -286,16 +286,40 @@ def plan_response(req: PlanRequest) -> PlanResponse:
 # ---------------------------------------------------------------------- movie metrics
 
 
+def probe_times(plan: MotionPlan) -> list[float]:
+    """Observation times [s] whose frequency-group count bounds the movie's cost.
+
+    Three probes: the first fully-lit frame (``t = 2 tau``), the middle of the trajectory, and
+    — on a fading drive — the first hand-over seen at the atom plane (``fade_events[0].time +
+    tau/2``).  A hand-over frame is the busiest a fading drive gets (two ``A`` rungs live, so
+    every ``B`` rung feeds two groups), and a budget read off the quiet first frame alone let
+    the 4x4 ``array_lift_hold`` movie run at mixing order 3 (152 groups at ``2 tau``, ~220 in a
+    hand-over) and take 6 s instead of 2 s.  Times past the simulate coverage limit are clipped.
+    """
+    tau = transit_time(plan.params)
+    latest = plan.wfs.t_span[1] - 0.5 * tau
+    times = [2.0 * tau, 0.5 * plan.spec.duration + 0.5 * tau]
+    # The first hand-over whose frame is fully lit: ``fade_schedule`` can report a y event at
+    # t = 0 (the xi_y = 1/2 ladder starts in a fade zone), which would probe a dark frame.
+    lit = [e.time + 0.5 * tau for e in plan.report.fade_events if e.time + 0.5 * tau >= 2.0 * tau]
+    if lit:
+        times.append(lit[0])
+    return sorted({min(max(t, 0.0), latest) for t in times})
+
+
 def first_frame_groups(req: PlanRequest) -> int:
-    """Frequency groups of the first fully-lit frame (``t = 2 tau``) at the hardware's order."""
+    """Largest frequency-group count over :func:`probe_times` at the hardware's order.
+
+    The name is historical (it probed only ``t = 2 tau`` at first); the value is what the
+    movie-order budget of :func:`resolve_movie_order` compares against.
+    """
     key = plan_id(req)
     cached = _GROUP_COUNTS.get(key)
     if cached is not None:
         return cached
     plan = get_plan(req)
-    t = min(2.0 * transit_time(plan.params), plan.wfs.t_span[1])
     try:
-        count = len(group_terms(build_terms(plan.wfs, t)))
+        count = max(len(group_terms(build_terms(plan.wfs, t))) for t in probe_times(plan))
     except ValueError as exc:
         raise classify(exc, "too_many_terms") from exc
     return _GROUP_COUNTS.put(key, count)
@@ -304,9 +328,10 @@ def first_frame_groups(req: PlanRequest) -> int:
 def resolve_movie_order(req: PlanRequest, movie_mixing_order: int | None) -> tuple[int, str | None]:
     """DESIGN §1.2: the mixing order the *movie metrics* use, and a note when it differs.
 
-    ``movie_mixing_order`` pins it; otherwise the hardware's order stands unless the first
-    frame at that order holds more than :data:`MOVIE_GROUP_BUDGET` frequency groups, in which
-    case the metrics drop to order 1 (the plan and report keep the requested order).
+    ``movie_mixing_order`` pins it; otherwise the hardware's order stands unless the busiest
+    probed frame (:func:`probe_times`) at that order holds more than :data:`MOVIE_GROUP_BUDGET`
+    frequency groups, in which case the metrics drop to order 1 (the plan and report keep the
+    requested order).
     """
     requested = req.hardware.mixing_order
     if movie_mixing_order is not None:
@@ -321,8 +346,8 @@ def resolve_movie_order(req: PlanRequest, movie_mixing_order: int | None) -> tup
     groups = first_frame_groups(req)
     if groups > MOVIE_GROUP_BUDGET:
         return 1, (
-            f"movie metrics fell back to mixing order 1: the first frame at order {requested} "
-            f"holds {groups} frequency groups (budget {MOVIE_GROUP_BUDGET}); pass "
+            f"movie metrics fell back to mixing order 1: the busiest probed frame at order "
+            f"{requested} holds {groups} frequency groups (budget {MOVIE_GROUP_BUDGET}); pass "
             f"movie_mixing_order={requested} to override."
         )
     return requested, None
